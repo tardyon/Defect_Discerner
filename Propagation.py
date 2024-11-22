@@ -6,6 +6,14 @@ from parameters import FresnelParameters
 class Propagation:
     """
     Class for performing Fresnel and Angular Spectrum propagation on a given mask array using encapsulated parameters.
+
+    Attributes:
+        params (FresnelParameters): Encapsulated simulation parameters.
+        FX (np.ndarray): Frequency grid in the X-direction.
+        FY (np.ndarray): Frequency grid in the Y-direction.
+        F_squared (np.ndarray): Squared frequency grid.
+        H (np.ndarray): Transfer function based on the selected propagation model.
+        model (str): Selected propagation model ('fresnel' or 'angular_spectrum').
     """
     def __init__(self, params: FresnelParameters):
         """
@@ -27,7 +35,11 @@ class Propagation:
     def _initialize_computational_grids(self):
         """
         Initialize frequency grids and transfer function based on parameters.
+
         All calculations are performed in pixel units.
+
+        This method sets up the necessary grids and the transfer function
+        required for the propagation based on the selected model.
         """
         # Extract parameters in pixel units
         wavelength_pixels = self.params.wavelength_pixels
@@ -70,6 +82,9 @@ class Propagation:
         """
         Create an edge roll-off function in pixel units.
 
+        This function generates a smooth transition at the edges of the aperture
+        to minimize artifacts in the propagation.
+
         Returns:
             np.ndarray: Edge roll-off array.
         """
@@ -94,7 +109,7 @@ class Propagation:
             array (np.ndarray): Input array.
 
         Returns:
-            np.ndarray: Padded array.
+            np.ndarray: Padded array with ones.
         """
         pad_factor = self.params.pad_factor
         ny, nx = array.shape
@@ -127,13 +142,15 @@ class Propagation:
 
     def propagate(self, mask_array: np.ndarray) -> np.ndarray:
         """
-        Perform Fresnel propagation on the input mask array.
+        Perform Fresnel or Angular Spectrum propagation on the input mask array.
 
         Parameters:
             mask_array (np.ndarray): Input 2D array (can be complex64) representing the initial field.
 
         Returns:
-            np.ndarray: Output array after propagation, either intensity or complex field.
+            np.ndarray: Output array after propagation.
+                        - If output_type is 'intensity', returns the intensity as float32.
+                        - If output_type is 'complex_field', returns the complex field as complex64.
         """
         # Apply padding if enabled
         if self.params.padding:

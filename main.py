@@ -24,18 +24,27 @@ def create_circular_aperture(size_pixels: int, radius_pixels: float) -> np.ndarr
     return mask
 
 def main():
+    """
+    Main function to perform Fresnel and Angular Spectrum propagation on a circular aperture mask.
+
+    This function sets up the simulation parameters, creates an occlusive circular aperture mask,
+    performs propagation using both Fresnel and Angular Spectrum methods, and visualizes the results.
+    
+    The problem it addresses is simulating and comparing different optical propagation models
+    to understand the behavior of light passing through an aperture.
+    """
     # Instantiate base parameters with default values
     base_params = FresnelParameters(
-        wavelength_um=1.0,                  # 0.5 µm wavelength
-        z_mm=1000.0,                          # 50 mm propagation distance
+        wavelength_um=1.0,                  # 1.0 µm wavelength
+        z_mm=1000.0,                        # 1000 mm propagation distance
         output_type='intensity',            # Output intensity
         padding=True,                       # Enable padding
         pad_factor=2,                       # Padding factor
         use_edge_rolloff=False,             # Disable edge roll-off
         canvas_size_pixels=1024,            # 1024x1024 pixels
-        canvas_size_mm=100.0,               # Change to 100 mm canvas size
-        pinhole_radius_inv_mm=2.0,          # 5 cycles/mm pinhole radius
-        delta_mm=1,                      # 0.01 mm delta for edge roll-off
+        canvas_size_mm=100.0,                # 100 mm canvas size
+        pinhole_radius_inv_mm=2.0,           # 2 cycles/mm pinhole radius
+        delta_mm=1,                         # 1 mm delta for edge roll-off
     )
 
 
@@ -53,7 +62,6 @@ def main():
     params_angular['propagation_model'] = 'angular_spectrum'
     params_angular = FresnelParameters(**params_angular)
 
-  
 
     # Create an occlusive circular aperture mask
     mask_array = create_circular_aperture(

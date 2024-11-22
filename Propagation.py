@@ -1,26 +1,26 @@
 import numpy as np
 from scipy.fft import fft2, ifft2, fftfreq, fftshift
 from scipy.special import erf
-from parameters import FresnelParameters
+from parameters import Parameters
 
 class Propagation:
     """
     Class for performing Fresnel and Angular Spectrum propagation on a given mask array using encapsulated parameters.
 
     Attributes:
-        params (FresnelParameters): Encapsulated simulation parameters.
+        params (Parameters): Encapsulated simulation parameters.
         FX (np.ndarray): Frequency grid in the X-direction.
         FY (np.ndarray): Frequency grid in the Y-direction.
         F_squared (np.ndarray): Squared frequency grid.
         H (np.ndarray): Transfer function based on the selected propagation model.
         model (str): Selected propagation model ('fresnel' or 'angular_spectrum').
     """
-    def __init__(self, params: FresnelParameters):
+    def __init__(self, params: Parameters):
         """
         Initialize the Propagation class with specified parameters.
 
         Parameters:
-            params (FresnelParameters): Encapsulated simulation parameters.
+            params (Parameters): Encapsulated simulation parameters.
         """
         self.params = params
         self.FX = None

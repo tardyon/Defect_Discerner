@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 @dataclass
-class FresnelParameters:
+class Parameters:
     """
     Encapsulates all parameters for Fresnel and Angular Spectrum propagation.
     

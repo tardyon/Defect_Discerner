@@ -2,7 +2,7 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
-from parameters import FresnelParameters
+from parameters import Parameters
 from Propagation import Propagation  # Updated import
 
 def create_circular_aperture(size_pixels: int, radius_pixels: float) -> np.ndarray:
@@ -34,7 +34,7 @@ def main():
     to understand the behavior of light passing through an aperture.
     """
     # Instantiate base parameters with default values
-    base_params = FresnelParameters(
+    base_params = Parameters(
         wavelength_um=1.0,                  # 1.0 µm wavelength
         z_mm=1000.0,                        # 1000 mm propagation distance
         output_type='intensity',            # Output intensity
@@ -55,12 +55,12 @@ def main():
     # Create parameters for Fresnel propagation
     params_fresnel = base_params.__dict__.copy()
     params_fresnel['propagation_model'] = 'fresnel'
-    params_fresnel = FresnelParameters(**params_fresnel)
+    params_fresnel = Parameters(**params_fresnel)
     
     # Create parameters for Angular Spectrum propagation
     params_angular = base_params.__dict__.copy()
     params_angular['propagation_model'] = 'angular_spectrum'
-    params_angular = FresnelParameters(**params_angular)
+    params_angular = Parameters(**params_angular)
 
 
     # Create an occlusive circular aperture mask

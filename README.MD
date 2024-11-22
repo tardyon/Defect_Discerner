@@ -11,7 +11,7 @@ Defect Discerner is a Python-based simulation tool for studying and visualizing 
 - **Fresnel and Angular Spectrum Propagation**: Simulates optical propagation using two models.
 - **Circular Aperture Mask Creation**: Generates occlusive circular aperture masks with adjustable parameters.
 - **Visualization**: Displays the aperture mask, propagated intensities, and cross-sectional lineouts for comparison.
-- **Configurable Parameters**: Adjust wavelength, propagation distance, canvas size, and more through the `FresnelParameters`.
+- **Configurable Parameters**: Adjust wavelength, propagation distance, canvas size, and more through the `Parameters`.
 
 ---
 
@@ -31,7 +31,7 @@ pip install -r requirements.txt
 File Structure
 
 	•	main.py: Main script to run the simulation and visualize results.
-	•	parameters.py: Contains the FresnelParameters class for configuring simulation parameters.
+	•	parameters.py: Contains the Parameters class for configuring simulation parameters.
 	•	Propagation.py: Module for propagating the aperture mask using specified models.
 
 Usage
@@ -44,7 +44,7 @@ python main.py
 
 Adjustable Parameters
 
-The propagation is governed by parameters defined in the FresnelParameters class. These include:
+The propagation is governed by parameters defined in the Parameters class. These include:
 	•	Wavelength: wavelength_um (in micrometers)
 	•	Propagation Distance: z_mm (in millimeters)
 	•	Canvas Size: canvas_size_pixels (in pixels) and canvas_size_mm (in millimeters)

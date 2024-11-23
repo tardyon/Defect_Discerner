@@ -59,9 +59,9 @@ def main():
     params = Parameters()
     inverse_params = InverseParameters()
     
-    # Modified file selection
-    file_path = select_file(
-        "Select an image file",
+    # Modified file selection for observed image
+    observed_file_path = select_file(
+        "Select observed image file",
         [
             ("PNG", ".png"),
             ("JPEG", ".jpg"),
@@ -72,13 +72,36 @@ def main():
         ]
     )
     
-    if not file_path:
-        print("No file selected.")
+    if not observed_file_path:
+        print("No observed image file selected.")
         return
 
-    # Load the image directly using tifffile for proper 16-bit handling
-    original_image = tiff.imread(file_path)
-    
+    # Add ground truth mask selection
+    ground_truth_path = select_file(
+        "Select ground truth mask file (optional)",
+        [
+            ("PNG", ".png"),
+            ("JPEG", ".jpg"),
+            ("JPEG", ".jpeg"),
+            ("GIF", ".gif"),
+            ("TIFF", ".tiff"),
+            ("TIFF", ".tif")
+        ]
+    )
+
+    # Load the observed image
+    original_image = tiff.imread(observed_file_path)
+
+    # Load ground truth if provided
+    ground_truth = None
+    if ground_truth_path:
+        ground_truth = tiff.imread(ground_truth_path)
+        # Normalize to float32 [0,1] range if needed
+        if ground_truth.dtype == np.uint16:
+            ground_truth = ground_truth.astype(np.float32) / 65535.0
+        elif ground_truth.dtype == np.uint8:
+            ground_truth = ground_truth.astype(np.float32) / 255.0
+
     # Keep original_image as is for display (already in 16-bit format)
     # Create a normalized float32 version for processing
     image_array = original_image.astype(np.float32)
@@ -97,9 +120,10 @@ def main():
     I_observed = np.clip(image_array, 0, 1)  # Ensure values between 0 and 1
     print(f"I_observed stats: min={I_observed.min()}, max={I_observed.max()}, mean={I_observed.mean()}")
 
-    # Update canvas size parameters based on the image size
+    # Update canvas size parameters based on the image size and scaling factor
     params.canvas_size_pixels = I_observed.shape[1]
     params.canvas_size_mm = 10.0  # Adjust as needed based on scaling
+    pixel_size_mm = params.canvas_size_mm / params.canvas_size_pixels  # Physical size per pixel
 
     # Replace command line input with GUI selection
     prior_type = select_prior_type()
@@ -174,17 +198,20 @@ def main():
 
     # Track loss history
     loss_history = []
-    # Use save_interval from inverse_params
+    # Modify iteration_callback to record loss at every iteration
     def iteration_callback(M_current, iteration):
+        # Save masks at intervals
         if iteration % inverse_params.save_interval == 0:
-            tiff.imwrite(f"MasksEvolutions/mask_iter_{iteration:03d}.tiff", 
-                        float_to_uint16(M_current))
-            I_current = forward_operator(M_current)
-            loss = huber_loss(I_observed, I_current)
-            loss_history.append((iteration, loss))
+            tiff.imwrite(f"MasksEvolutions/mask_iter_{iteration:03d}.tiff",
+                         float_to_uint16(M_current))
+        # Compute current intensity and loss
+        I_current = forward_operator(M_current)
+        loss = huber_loss(I_observed, I_current)
+        loss_history.append((iteration, loss))
 
-    # Only use the ADMM solver
-    solver = ADMMSolver(forward_operator, huber_loss, regularizers, constraints, callback=iteration_callback)
+    # Ensure ADMMSolver calls the callback at each iteration
+    solver = ADMMSolver(forward_operator, huber_loss, regularizers, constraints,
+                        callback=iteration_callback)
 
     print(f"\nRunning ADMM solver...")
     M_reconstructed = solver.solve(
@@ -202,66 +229,79 @@ def main():
     solver_name = 'ADMM'
     M_reconstructed = results[solver_name]
     # Create a new figure for the solver with 2x3 grid
-    fig = plt.figure(figsize=(24, 12))
+    fig, axs = plt.subplots(2, 3, figsize=(24, 12))
     plt.suptitle(f'{solver_name} Solver Results', fontsize=16, y=0.95)
-    
-    # Define subplot positions
-    subplot_positions = {
-        'original': 1,    # Top left
-        'prior': 2,       # Top middle
-        'reconstructed': 3, # Top right
-        'propagation': 4,  # Bottom left 
-        'loss': 5         # Bottom middle
-    }
-    
+
     # 1. Original Image (Top left)
-    plt.subplot(2, 3, subplot_positions['original'])
-    plt.title('Original Input Image')
-    plt.imshow(original_image, cmap='gray')
-    plt.colorbar(label='Intensity (16-bit)')
-    plt.axis('off')
-    
+    ax = axs[0, 0]
+    ax.set_title('Original Input Image')
+    extent = [-params.canvas_size_mm / 2, params.canvas_size_mm / 2,
+              -params.canvas_size_mm / 2, params.canvas_size_mm / 2]
+    im = ax.imshow(original_image, cmap='gray', extent=extent, aspect='equal')
+    fig.colorbar(im, ax=ax, label='Intensity (16-bit)')
+    ax.set_xlabel('Position (mm)')
+    ax.set_ylabel('Position (mm)')
+
     # 2. Prior Mask (Top middle)
-    plt.subplot(2, 3, subplot_positions['prior'])
-    plt.title('Prior Mask')
-    plt.imshow(float_to_uint16(M_init), cmap='gray')
-    plt.colorbar(label='Intensity (16-bit)')
-    plt.axis('off')
-    
+    ax = axs[0, 1]
+    ax.set_title('Prior Mask')
+    im = ax.imshow(float_to_uint16(M_init), cmap='gray', extent=extent, aspect='equal')
+    fig.colorbar(im, ax=ax, label='Intensity (16-bit)')
+    ax.set_xlabel('Position (mm)')
+    ax.set_ylabel('Position (mm)')
+
     # 3. Reconstructed Mask (Top right)
-    plt.subplot(2, 3, subplot_positions['reconstructed'])
-    mse = np.mean((M_reconstructed - I_observed)**2)
+    ax = axs[0, 2]
+    mse = np.mean((M_reconstructed - I_observed) ** 2)
     ssim_index = ssim(I_observed, M_reconstructed, data_range=1.0)
-    plt.title(f'Reconstructed Mask\nMSE: {mse:.6f}\nSSIM: {ssim_index:.6f}')
-    plt.imshow(float_to_uint16(M_reconstructed), cmap='gray')
-    plt.colorbar(label='Intensity (16-bit)')
-    plt.axis('off')
-    
+    ax.set_title(f'Reconstructed Mask\nMSE: {mse:.6f}\nSSIM: {ssim_index:.6f}')
+    im = ax.imshow(float_to_uint16(M_reconstructed), cmap='gray', extent=extent, aspect='equal')
+    fig.colorbar(im, ax=ax, label='Intensity (16-bit)')
+    ax.set_xlabel('Position (mm)')
+    ax.set_ylabel('Position (mm)')
+
     # 4. Forward Propagation (Bottom left)
-    plt.subplot(2, 3, subplot_positions['propagation'])
+    ax = axs[1, 0]
     I_reconstructed = propagation.propagate(M_reconstructed)
-    plt.title('Reconstructed Propagation')
-    plt.imshow(float_to_uint16(I_reconstructed), cmap='gray')
-    plt.colorbar(label='Intensity (16-bit)')
-    plt.axis('off')
-    
+    ax.set_title('Reconstructed Propagation')
+    im = ax.imshow(float_to_uint16(I_reconstructed), cmap='gray', extent=extent, aspect='equal')
+    fig.colorbar(im, ax=ax, label='Intensity (16-bit)')
+    ax.set_xlabel('Position (mm)')
+    ax.set_ylabel('Position (mm)')
+
     # 5. Loss History (Bottom middle)
+    ax = axs[1, 1]
     if loss_histories[solver_name]:
-        plt.subplot(2, 3, subplot_positions['loss'])
         iterations, losses = zip(*loss_histories[solver_name])
-        plt.semilogy(iterations, losses, 'b-', linewidth=2)
-        plt.title('Loss History')
-        plt.xlabel('Iteration')
-        plt.ylabel('Loss (log scale)')
-        plt.grid(True, which="both", ls="-", alpha=0.2)
-        plt.minorticks_on()
-    
+        ax.semilogy(iterations, losses, 'b-', linewidth=2)
+    else:
+        ax.plot([], [])
+    ax.set_title('Loss History')
+    ax.set_xlabel('Iteration')
+    ax.set_ylabel('Loss (log scale)')
+    ax.grid(True, which="both", ls="-", alpha=0.2)
+    ax.minorticks_on()
+
+    # 6. Ground Truth Mask (Bottom right)
+    if ground_truth is not None:
+        ax = axs[1, 2]
+        ax.set_title('Ground Truth Mask')
+        im = ax.imshow(float_to_uint16(ground_truth), cmap='gray', extent=extent, aspect='equal')
+        fig.colorbar(im, ax=ax, label='Intensity (16-bit)')
+        ax.set_xlabel('Position (mm)')
+        ax.set_ylabel('Position (mm)')
+
+        # Save ground truth
+        tiff.imwrite('MasksEvolutions/ground_truth.tiff', float_to_uint16(ground_truth))
+    else:
+        axs[1, 2].axis('off')
+
     # Adjust layout
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    
+
     # Save the figure
     plt.savefig(f'MasksEvolutions/{solver_name}_results.png', dpi=300, bbox_inches='tight')
-    
+
     plt.show()
 
     # Save the original image too

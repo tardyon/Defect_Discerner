@@ -47,7 +47,7 @@ class InverseParameters:
     prior_filepath: Optional[str] = None     # Filepath to load prior mask
     solver_type: str = 'FISTA'               # 'FISTA', 'ADMM', 'Nesterov', 'PGD'
     max_iter: int = 50                      # Maximum number of iterations
-    learning_rate: float = 1e-2              # Learning rate for the solver
+    learning_rate: float = 1e-3              # Learning rate for the solver
     convergence_threshold: float = 1e-6      # Convergence threshold
     
     # update_method: str = 'set_pixels'        # 'set_pixels', 'gradient', etc.
@@ -64,7 +64,9 @@ class InverseParameters:
     ellipse_theta: float = 0.0               # Rotation angle of shape bias ellipse
 
     # Solver-Specific Parameters
-    admm_rho: float = 8.0                    # ADMM penalty parameter
+    
+    admm_rho: float = 10.0                    # ADMM penalty parameter
+
     nesterov_momentum: float = 0.6           # Nesterov momentum coefficient
     pgd_momentum: float = 0.3                # PGD momentum (if used)
 

@@ -254,11 +254,18 @@ with st.sidebar:
                 elif mask_data.dtype == np.uint8:
                     mask_data = mask_data.astype(np.float32) / 255.0
                     
+                # Determine expected shape based on padding
+                if st.session_state.params.padding:
+                    expected_size = st.session_state.params.canvas_size_pixels * st.session_state.params.pad_factor
+                else:
+                    expected_size = st.session_state.params.canvas_size_pixels
+
+                expected_shape = (expected_size, expected_size)
+                
                 # Resize to match canvas if needed
-                expected_shape = (st.session_state.params.canvas_size_pixels, st.session_state.params.canvas_size_pixels)
                 if mask_data.shape != expected_shape:
                     from scipy.ndimage import zoom
-                    zoom_factor = st.session_state.params.canvas_size_pixels / mask_data.shape[0]
+                    zoom_factor = st.session_state.params.canvas_size_pixels * st.session_state.params.pad_factor / mask_data.shape[0] if st.session_state.params.padding else st.session_state.params.canvas_size_pixels / mask_data.shape[0]
                     mask_data = zoom(mask_data, zoom_factor)
                 
                 # Store in session state for drawing

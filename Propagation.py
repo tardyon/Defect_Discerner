@@ -174,6 +174,11 @@ class Propagation:
         # Apply edge roll-off if enabled
         if self.params.use_edge_rolloff:
             edge_rolloff = self._create_edge_rolloff()
+            # Validate shapes before multiplication
+            if U0.shape != edge_rolloff.shape:
+                raise ValueError(
+                    f"Shape mismatch: U0 shape {U0.shape} and edge_rolloff shape {edge_rolloff.shape}"
+                )
             U0 = U0 * edge_rolloff  # Ensure shapes match
 
         # Perform the propagation using FFT

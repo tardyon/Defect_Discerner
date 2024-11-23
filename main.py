@@ -1,147 +1,131 @@
-# main.py
-
+import argparse
 import numpy as np
 import matplotlib.pyplot as plt
+from PIL import Image
+from Mask_Maker import MaskMaker
 from parameters import Parameters
-from Propagation import Propagation  # Updated import
+import tkinter as tk
+from tkinter import filedialog   
 
-def create_circular_aperture(size_pixels: int, radius_pixels: float) -> np.ndarray:
-    """
-    Create an occlusive circular aperture mask.
+def load_prior_mask(file_path):
+    """Load an image file and convert it to a normalized grayscale mask."""
+    try:
+        img = Image.open(file_path)
+        if img.mode == 'I;16':
+            mask = np.array(img, dtype=np.float32) / 65535.0  # Normalize 16-bit to [0,1]
+        elif img.mode == 'L':
+            mask = np.array(img, dtype=np.float32) / 255.0    # Normalize 8-bit to [0,1]
+        else:
+            img = img.convert('L')
+            mask = np.array(img, dtype=np.float32) / 255.0    # Normalize other modes to [0,1]
+        return mask
+    except Exception as e:
+        print(f"Error loading image {file_path}: {e}")
+        return None
 
-    Parameters:
-        size_pixels (int): Size of the mask in pixels (assumed square).
-        radius_pixels (float): Radius of the aperture in pixels.
-
-    Returns:
-        np.ndarray: Occlusive circular aperture mask.
-    """
-    Y, X = np.ogrid[:size_pixels, :size_pixels]
-    center = size_pixels // 2
-    dist_from_center = np.sqrt((X - center)**2 + (Y - center)**2)
-    mask = np.ones((size_pixels, size_pixels), dtype=np.complex64)
-    mask[dist_from_center <= radius_pixels] = 0.0  # Occlusive mask
-    return mask
+def select_prior_images():
+    """Open Mac Finder to select prior image files."""
+    root = tk.Tk()
+    root.withdraw()  # Hide the root window
+    file_paths = filedialog.askopenfilenames(
+        title="Select Prior Image Files",
+        filetypes=[("Image Files", "*.png *.jpeg *.jpg *.tiff *.tif")]
+    )
+    return list(file_paths)
 
 def main():
-    """
-    Main function to perform Fresnel and Angular Spectrum propagation on a circular aperture mask.
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="Test MaskMaker with various priors.")
+    # Removed prior_images argument
+    # parser.add_argument('--prior_images', nargs='*', help='Paths to prior image files (png, jpeg, tiff)', default=[])
+    args = parser.parse_args()
 
-    This function sets up the simulation parameters, creates an occlusive circular aperture mask,
-    performs propagation using both Fresnel and Angular Spectrum methods, and visualizes the results.
+    # Load parameters
+    params = Parameters()
+    size_x_pixels = params.canvas_size_pixels
+    size_y_pixels = params.canvas_size_pixels
+    size_x_mm = params.canvas_size_mm
+    size_y_mm = params.canvas_size_mm
+
+    # Load prior masks
+    # Removed prior masks loading
+    # prior_masks = []
+    # for img_path in args.prior_images:
+    #     mask = load_prior_mask(img_path)
+    #     if mask is not None:
+    #         prior_masks.append(mask)
+
+    # Option to select prior images via Mac Finder
+    prior_images = select_prior_images()
+    prior_masks = []
+    for img_path in prior_images:
+        mask = load_prior_mask(img_path)
+        if mask is not None:
+            prior_masks.append(mask)
+
+    # Initialize MaskMaker
+    # Removed initialization with prior masks
+    mask_maker = MaskMaker(size_x_pixels, size_y_pixels, size_x_mm, size_y_mm)
     
-    The problem it addresses is simulating and comparing different optical propagation models
-    to understand the behavior of light passing through an aperture.
-    """
-    # Instantiate base parameters with default values
-    base_params = Parameters(
-        wavelength_um=1.0,                  # 1.0 µm wavelength
-        z_mm=1000.0,                        # 1000 mm propagation distance
-        output_type='intensity',            # Output intensity
-        padding=True,                       # Enable padding
-        pad_factor=2,                       # Padding factor
-        use_edge_rolloff=False,             # Disable edge roll-off
-        canvas_size_pixels=1024,            # 1024x1024 pixels
-        canvas_size_mm=100.0,                # 100 mm canvas size
-        pinhole_radius_inv_mm=2.0,           # 2 cycles/mm pinhole radius
-        delta_mm=1,                         # 1 mm delta for edge roll-off
-    )
+    # Generate masks
+    mask_types = ['random_real', 'random_complex', 'combination']
+    masks = {}
+    for mtype in mask_types:
+        getattr(mask_maker, mtype)()
+        masks[mtype] = mask_maker.mask.copy()
 
+    # Create central disks masks
+    sizes = [0.1, 0.5, 1.0]  # diameters in mm
+    opacities = [0.8] * 3  # example opacities
+    central_disks_masks = []
+    for size, opacity in zip(sizes, opacities):
+        mask_maker.central_disks([size], [opacity])
+        central_disks_masks.append(mask_maker.mask.copy())
 
-    # Convert aperture radius from millimeters to pixels using updated scaling
-    aperture_radius_mm = 0.1  # Aperture radius in millimeters
-    aperture_radius_pixels = aperture_radius_mm / base_params.scaling_mm_per_pixel
+    # Plot masks
+    num_masks = len(masks) + len(central_disks_masks) + len(prior_masks)
+    plt.figure(figsize=(15, 15), constrained_layout=True)  # Adjusted figure size for 3x3 grid
 
-    # Create parameters for Fresnel propagation
-    params_fresnel = base_params.__dict__.copy()
-    params_fresnel['propagation_model'] = 'fresnel'
-    params_fresnel = Parameters(**params_fresnel)
-    
-    # Create parameters for Angular Spectrum propagation
-    params_angular = base_params.__dict__.copy()
-    params_angular['propagation_model'] = 'angular_spectrum'
-    params_angular = Parameters(**params_angular)
+    # Plot random and combination masks
+    idx = 1
+    for mtype, mask in masks.items():
+        ax = plt.subplot(3, 3, idx)
+        im = ax.imshow(np.abs(mask), cmap='gray')
+        ax.set_title(mtype)
+        ax.set_xlabel('Millimeters')
+        ax.set_ylabel('Millimeters')
+        ax.set_aspect('equal')  # Maintain aspect ratio
 
+        cbar = plt.colorbar(im, ax=ax)
+        cbar.set_label('Intensity')
+        idx += 1
 
-    # Create an occlusive circular aperture mask
-    mask_array = create_circular_aperture(
-        size_pixels=base_params.canvas_size_pixels,
-        radius_pixels=aperture_radius_pixels
-    )
+    # Plot central disk masks
+    for disk_mask, size in zip(central_disks_masks, sizes):
+        ax = plt.subplot(3, 3, idx)
+        im = ax.imshow(np.abs(disk_mask), cmap='gray')
+        ax.set_title(f'Central Disk {size} mm')
+        ax.set_xlabel('Millimeters')
+        ax.set_ylabel('Millimeters')
+        ax.set_aspect('equal')  # Maintain aspect ratio
 
-    # Instantiate the propagators with the parameters
-    propagator_fresnel = Propagation(params_fresnel)  # Using 'fresnel' model
-    propagator_angular = Propagation(params_angular)  # Using 'angular_spectrum' model
+        cbar = plt.colorbar(im, ax=ax)
+        cbar.set_label('Intensity')
+        idx += 1
 
-    # Perform Fresnel propagation
-    propagated_intensity_fresnel = propagator_fresnel.propagate(mask_array)
+    # Plot prior raw and prior mask
+    for prior_mask in prior_masks:
+        ax = plt.subplot(3, 3, idx)
+        im = ax.imshow(np.abs(prior_mask), cmap='gray')
+        ax.set_title('Prior Mask')
+        ax.set_xlabel('Millimeters')
+        ax.set_ylabel('Millimeters')
+        ax.set_aspect('equal')  # Maintain aspect ratio
 
-    # Perform Angular Spectrum propagation
-    propagated_intensity_angular = propagator_angular.propagate(mask_array)
+        cbar = plt.colorbar(im, ax=ax)
+        cbar.set_label('Intensity')
+        idx += 1
 
-    # Visualize the results
-    plt.figure(figsize=(24, 6))
-
-    # Show the mask
-    plt.subplot(1, 4, 1)
-    extent_mm = params_fresnel.canvas_size_mm  # Already in millimeters
-    plt.imshow(
-        np.abs(mask_array),
-        cmap='gray',
-        extent=[-extent_mm/2, extent_mm/2, -extent_mm/2, extent_mm/2]
-    )
-    plt.title('Occlusive Circular Aperture Mask')
-    plt.xlabel('X (mm)')
-    plt.ylabel('Y (mm)')
-    plt.colorbar(label='Amplitude')
-
-    # Show the propagated intensity using Fresnel
-    plt.subplot(1, 4, 2)
-    plt.imshow(
-        propagated_intensity_fresnel,
-        cmap='gray',
-        extent=[-extent_mm/2, extent_mm/2, -extent_mm/2, extent_mm/2]
-    )
-    plt.title('Fresnel Propagation Intensity')
-    plt.xlabel('X (mm)')
-    plt.ylabel('Y (mm)')
-    plt.colorbar(label='Intensity')
-
-    # Show the propagated intensity using Angular Spectrum
-    plt.subplot(1, 4, 3)
-    plt.imshow(
-        propagated_intensity_angular,
-        cmap='gray',
-        extent=[-extent_mm/2, extent_mm/2, -extent_mm/2, extent_mm/2]
-    )
-    plt.title('Angular Spectrum Propagation Intensity')
-    plt.xlabel('X (mm)')
-    plt.ylabel('Y (mm)')
-    plt.colorbar(label='Intensity')
-
-    # Show the cross-sectional lineouts for both methods
-    plt.subplot(1, 4, 4)
-    center_index = params_fresnel.canvas_size_pixels // 2
-    lineout_fresnel = propagated_intensity_fresnel[center_index, :]
-    lineout_angular = propagated_intensity_angular[center_index, :]
-    plt.plot(
-        np.linspace(-extent_mm/2, extent_mm/2, params_fresnel.canvas_size_pixels),
-        lineout_fresnel,
-        label='Fresnel'
-    )
-    plt.plot(
-        np.linspace(-extent_mm/2, extent_mm/2, params_fresnel.canvas_size_pixels),
-        lineout_angular,
-        label='Angular Spectrum',
-        linestyle='--'
-    )
-    plt.title('Cross-Sectional Lineout')
-    plt.xlabel('X (mm)')
-    plt.ylabel('Intensity')
-    plt.legend()
-    plt.ylim(0, 1.1 * max(np.max(lineout_fresnel), np.max(lineout_angular)))
-
-    plt.tight_layout()
     plt.show()
 
 if __name__ == "__main__":

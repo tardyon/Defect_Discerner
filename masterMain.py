@@ -1,11 +1,10 @@
 # masterMain.py
 
 import numpy as np
-import yaml
 import os
 import tkinter as tk
 from tkinter import filedialog
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from scipy.fft import fft2, ifft2, fftfreq
 from scipy.special import erf
 from scipy.ndimage import zoom
@@ -29,6 +28,13 @@ class Parameters:
     pinhole_radius_inv_mm: float = 2.0
     delta_mm: float = 0.01
     propagation_model: str = 'fresnel'
+    prior_type: str = 'random'               # 'random', 'load', 'transparent'
+    prior_filepath: str = None               # Filepath to load prior mask
+    max_iter: int = 500                      # Maximum number of iterations
+    convergence_threshold: float = 1e-7      # Convergence threshold
+    save_interval: int = 10                  # Interval for saving mask evolution
+    tv_weight: float = 0.1                   # Weight for total variation regularization
+    admm_rho: float = 12.0                   # ADMM penalty parameter
 
     @property
     def scaling_mm_per_pixel(self) -> float:
@@ -70,21 +76,9 @@ class Parameters:
     def delta_pixels(self) -> float:
         return self.delta_mm / self.scaling_mm_per_pixel
 
-# InverseParameters class
-@dataclass
-class InverseParameters:
-    prior_type: str = 'random'               # 'random', 'load', 'transparent'
-    prior_filepath: str = None               # Filepath to load prior mask
-    max_iter: int = 500                      # Maximum number of iterations
-    convergence_threshold: float = 1e-7      # Convergence threshold
-    save_interval: int = 10                  # Interval for saving mask evolution
-    tv_weight: float = 0.1                   # Weight for total variation regularization
-    admm_rho: float = 12.0                   # ADMM penalty parameter
-
-    def validate(self):
-        valid_prior_types = ['random', 'load', 'transparent']
-        if self.prior_type not in valid_prior_types:
-            raise ValueError(f"Invalid prior_type '{self.prior_type}'. Valid options are {valid_prior_types}.")
+    def validate_inverse_parameters(self):
+        if self.prior_type not in ['random', 'load', 'transparent']:
+            raise ValueError(f"Invalid prior_type '{self.prior_type}'. Valid options are ['random', 'load', 'transparent'].")
 
         if self.max_iter <= 0:
             raise ValueError("max_iter must be a positive integer.")
@@ -337,7 +331,7 @@ def select_prior_type():
 def main():
     # Initialize parameters
     params = Parameters()
-    inverse_params = InverseParameters()
+    params.validate_inverse_parameters()
 
     # File selection for observed image
     observed_file_path = select_file(
@@ -404,7 +398,7 @@ def main():
 
     # Prior type selection
     prior_type = select_prior_type()
-    inverse_params.prior_type = prior_type
+    params.prior_type = prior_type
 
     # Initialize MaskMaker with prior
     mask_maker = MaskMaker(
@@ -459,7 +453,7 @@ def main():
 
     # Regularizers
     regularizers = {
-        'tv': lambda M: inverse_params.tv_weight * total_variation(M)
+        'tv': lambda M: params.tv_weight * total_variation(M)
     }
 
     constraints = {
@@ -474,7 +468,7 @@ def main():
     # Track loss history
     loss_history = []
     def iteration_callback(M_current, iteration):
-        if iteration % inverse_params.save_interval == 0:
+        if iteration % params.save_interval == 0:
             tiff.imwrite(f"MasksEvolutions/mask_iter_{iteration:03d}.tiff",
                          float_to_uint16(M_current))
         I_current = forward_operator(M_current)
@@ -489,8 +483,8 @@ def main():
     M_reconstructed = solver.solve(
         I_observed,
         M_init.copy(),
-        max_iter=inverse_params.max_iter,
-        rho=inverse_params.admm_rho
+        max_iter=params.max_iter,
+        rho=params.admm_rho
     )
 
     # Save the final reconstructed mask

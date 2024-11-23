@@ -114,3 +114,7 @@ class MaskMaker:
         """
         zoom_factors = (new_size[0] / self.mask.shape[0], new_size[1] / self.mask.shape[1])
         self.mask = zoom(self.mask, zoom_factors, order=1).astype(np.float32)
+        
+    def fully_transparent(self):
+        """Initialize mask with a fully transparent background."""
+        self.mask = np.ones((self.size_y_pixels, self.size_x_pixels), dtype=np.float32)

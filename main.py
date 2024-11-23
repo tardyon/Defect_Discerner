@@ -36,7 +36,7 @@ def select_prior_type():
     """GUI dialog for selecting prior type."""
     root = tk.Tk()
     root.title("Select Prior Type")
-    root.geometry("300x200")
+    root.geometry("300x250")  # Increased height to accommodate new option
     
     selected_type = tk.StringVar(value="random")
     
@@ -47,6 +47,7 @@ def select_prior_type():
     tk.Radiobutton(root, text="Random", variable=selected_type, value="random").pack()
     tk.Radiobutton(root, text="Load from file", variable=selected_type, value="load").pack()
     tk.Radiobutton(root, text="Central disk", variable=selected_type, value="disk").pack()
+    tk.Radiobutton(root, text="Fully Transparent", variable=selected_type, value="transparent").pack()  # New option
     tk.Button(root, text="OK", command=on_select).pack(pady=20)
     
     root.mainloop()
@@ -140,6 +141,8 @@ def main():
         mask_maker.random_real()
     elif prior_type == 'disk':
         mask_maker.central_disk(diameter_fraction=0.2, opacity=0.0)
+    elif prior_type == 'transparent':  # Handle new option
+        mask_maker.fully_transparent()
     elif prior_type == 'load':
         # Ask user to select a prior mask file using the custom function
         prior_file_path = select_file(
@@ -167,6 +170,14 @@ def main():
         print("Invalid prior type selected.")
         return
     M_init = mask_maker.mask
+    
+    # Convert float arrays to 16-bit for visualization
+    def float_to_uint16(arr):
+        arr = np.clip(arr, 0, 1)
+        return (arr * 65535).astype(np.uint16)
+
+    # Save the initial prior mask
+    tiff.imwrite('MasksEvolutions/initial_prior.tiff', float_to_uint16(M_init))
 
     # Ensure the prior matches the observed image size
     if M_init.shape != I_observed.shape:
@@ -190,11 +201,6 @@ def main():
     
     # Create directory for mask evolution
     os.makedirs("MasksEvolutions", exist_ok=True)
-
-    # Convert float arrays to 16-bit for visualization
-    def float_to_uint16(arr):
-        arr = np.clip(arr, 0, 1)
-        return (arr * 65535).astype(np.uint16)
 
     # Track loss history
     loss_history = []
@@ -220,6 +226,9 @@ def main():
         max_iter=inverse_params.max_iter,
         rho=inverse_params.admm_rho
     )
+    
+    # Save the final reconstructed mask
+    tiff.imwrite('MasksEvolutions/reconstructed_mask.tiff', float_to_uint16(M_reconstructed))
 
     # Simplify results storage - only for ADMM
     results = {'ADMM': M_reconstructed}

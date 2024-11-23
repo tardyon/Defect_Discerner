@@ -46,17 +46,17 @@ class InverseParameters:
     prior_type: str = 'random'               # 'random', 'load', 'disk'
     prior_filepath: Optional[str] = None     # Filepath to load prior mask
     solver_type: str = 'ADMM'               # 'FISTA', 'ADMM', 'Nesterov', 'PGD'
-    max_iter: int = 50                      # Maximum number of iterations
+    max_iter: int = 500                      # Maximum number of iterations
     learning_rate: float = 1e-3              # Learning rate for the solver
     convergence_threshold: float = 1e-7      # Convergence threshold
     
     # update_method: str = 'set_pixels'        # 'set_pixels', 'gradient', etc.
     # epochs: int = 10                         # Number of epochs for iterative solvers
-    save_interval: int = 1                  # Interval for saving mask evolution
+    save_interval: int = 10                  # Interval for saving mask evolution
 
     # Regularization Parameters
     tv_weight: float = 0.1                   # Weight for total variation regularization
-    shape_weight: float = 0.001              # Weight for shape bias regularization
+    shape_weight: float = 0.0001              # Weight for shape bias regularization
     ellipse_center_x: Optional[int] = None   # Center X of shape bias ellipse (defaults to canvas center)
     ellipse_center_y: Optional[int] = None   # Center Y of shape bias ellipse (defaults to canvas center)
     ellipse_a: int = 50                      # Major axis of shape bias ellipse
@@ -64,7 +64,7 @@ class InverseParameters:
     ellipse_theta: float = 0.0               # Rotation angle of shape bias ellipse
 
     # Solver-Specific Parameters
-    admm_rho: float = 8.0                    # ADMM penalty parameter
+    admm_rho: float = 12.0                    # ADMM penalty parameter
     nesterov_momentum: float = 0.6           # Nesterov momentum coefficient
     pgd_momentum: float = 0.3                # PGD momentum (if used)
 

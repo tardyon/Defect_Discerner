@@ -51,60 +51,6 @@ class MaskMaker:
         for val, (x, y) in zip(valid_values, valid_locations):
             self.mask[y, x] = val
 
-    def add_disk(self, center_x, center_y, diameter, opacity=0.0):
-        """
-        Add a disk to the mask at specified location.
-
-        Parameters:
-            center_x (float): X coordinate of disk center in pixels
-            center_y (float): Y coordinate of disk center in pixels
-            diameter (float): Diameter of disk in pixels
-            opacity (float): Opacity value between 0 and 1 (default 0.0, fully opaque)
-
-        Returns:
-            bool: True if disk was fully within bounds, False if partially or fully out of bounds
-        """
-        radius = diameter / 2
-        
-        # Check if disk would be fully out of bounds
-        if (center_x + radius < 0 or center_x - radius > self.size_x_pixels or
-            center_y + radius < 0 or center_y - radius > self.size_y_pixels):
-            return False
-
-        # Create coordinate grid for this disk
-        y, x = np.ogrid[:self.size_y_pixels, :self.size_x_pixels]
-        disk_mask = ((x - center_x)**2 + (y - center_y)**2 <= radius**2)
-        
-        # Check if disk is partially out of bounds
-        fully_within_bounds = (
-            center_x - radius >= 0 and 
-            center_x + radius < self.size_x_pixels and
-            center_y - radius >= 0 and 
-            center_y + radius < self.size_y_pixels
-        )
-        
-        # Apply disk to mask
-        self.mask[disk_mask] = opacity
-        
-        return fully_within_bounds
-
-    def central_disk(self, diameter_fraction=0.2, opacity=0.0):
-        """Initialize mask with a central disk.
-        
-        Parameters:
-            diameter_fraction (float): Fraction of the smallest dimension to use as diameter
-            opacity (float): Opacity of the disk (0.0 is fully opaque, 1.0 is fully transparent)
-        """
-        min_dimension = min(self.size_x_pixels, self.size_y_pixels)
-        diameter = min_dimension * diameter_fraction
-        center_x = self.size_x_pixels // 2
-        center_y = self.size_y_pixels // 2
-        
-        # Initialize with fully transparent background
-        self.mask = np.ones((self.size_y_pixels, self.size_x_pixels), dtype=np.float32)
-        # Add the disk
-        self.add_disk(center_x, center_y, diameter, opacity)
-
     def resize_mask(self, new_size):
         """
         Resize the mask to the specified new size.

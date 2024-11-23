@@ -3,7 +3,7 @@ from parameters import Parameters
 from Mask_Maker import MaskMaker
 from Propagation import Propagation
 from loss_functions import huber_loss
-from regularizations import total_variation, shape_bias
+from regularizations import total_variation
 from solvers import ADMMSolver  # Only import ADMMSolver
 from skimage.metrics import structural_similarity as ssim
 import matplotlib.pyplot as plt
@@ -36,20 +36,19 @@ def select_prior_type():
     """GUI dialog for selecting prior type."""
     root = tk.Tk()
     root.title("Select Prior Type")
-    root.geometry("300x250")  # Increased height to accommodate new option
-    
+    root.geometry("300x200")  # Adjusted height
+
     selected_type = tk.StringVar(value="random")
-    
+
     def on_select():
         root.quit()
-    
+
     tk.Label(root, text="Choose prior type:").pack(pady=10)
     tk.Radiobutton(root, text="Random", variable=selected_type, value="random").pack()
     tk.Radiobutton(root, text="Load from file", variable=selected_type, value="load").pack()
-    tk.Radiobutton(root, text="Central disk", variable=selected_type, value="disk").pack()
-    tk.Radiobutton(root, text="Fully Transparent", variable=selected_type, value="transparent").pack()  # New option
+    tk.Radiobutton(root, text="Fully Transparent", variable=selected_type, value="transparent").pack()
     tk.Button(root, text="OK", command=on_select).pack(pady=20)
-    
+
     root.mainloop()
     prior_type = selected_type.get()
     root.destroy()
@@ -139,9 +138,7 @@ def main():
     )
     if prior_type == 'random':
         mask_maker.random_real()
-    elif prior_type == 'disk':
-        mask_maker.central_disk(diameter_fraction=0.2, opacity=0.0)
-    elif prior_type == 'transparent':  # Handle new option
+    elif prior_type == 'transparent':
         mask_maker.fully_transparent()
     elif prior_type == 'load':
         # Ask user to select a prior mask file using the custom function
@@ -183,11 +180,9 @@ def main():
     if M_init.shape != I_observed.shape:
         M_init = np.resize(M_init, I_observed.shape)
 
-    # Replace the hardcoded regularizers with parameters from inverse_params
-    ellipse_params = inverse_params.get_ellipse_params(params.canvas_size_pixels)
+    # Update regularizers to include only 'tv'
     regularizers = {
-        'tv': lambda M: inverse_params.tv_weight * total_variation(M),
-        'shape': lambda M: inverse_params.shape_weight * shape_bias(M, ellipse_params)
+        'tv': lambda M: inverse_params.tv_weight * total_variation(M)
     }
 
     constraints = {

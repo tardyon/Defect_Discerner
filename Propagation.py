@@ -1,3 +1,12 @@
+"""
+Defect Discerner - Propagation Module
+
+Author: Michael C.M. Varney
+Version: 1.0.0
+
+This module handles Fresnel and Angular Spectrum propagation calculations for the Defect Discerner tool.
+"""
+
 import numpy as np
 from scipy.fft import fft2, ifft2, fftfreq, fftshift
 from scipy.special import erf

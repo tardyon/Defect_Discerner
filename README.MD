@@ -1,6 +1,7 @@
-Here’s a suggested README.md tailored to your codebase:
-
 # Defect Discerner
+
+**Author**: Michael C.M. Varney  
+**Version**: 1.0.0
 
 Defect Discerner is a Python-based simulation tool for studying and visualizing optical propagation models using Fresnel and Angular Spectrum methods. It is designed to compare the behavior of light propagation through an aperture under different models, helping researchers analyze the nuances of light behavior in optical systems.
 

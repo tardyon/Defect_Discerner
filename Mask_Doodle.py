@@ -1,3 +1,12 @@
+"""
+Defect Discerner - Mask Doodle Module
+
+Author: Michael C.M. Varney
+Version: 1.0.0
+
+This module provides the Streamlit interface for drawing masks and performing optical propagation simulations.
+"""
+
 import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt

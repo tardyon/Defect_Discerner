@@ -1,3 +1,12 @@
+"""
+Defect Discerner - Parameters Module
+
+Author: Michael C.M. Varney
+Version: 1.0.0
+
+This module defines the Parameters class for configuring simulation parameters in the Defect Discerner tool.
+"""
+
 # parameters.py
 
 from dataclasses import dataclass, asdict

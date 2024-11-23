@@ -3,5 +3,6 @@ matplotlib
 scipy
 dataclasses
 streamlit==1.40.1
-streamlit-drawable-canvas==0.9.3
+streamlit-drawable-canvas>=0.9.5
 tifffile>=2023.0.0
+pyyaml>=6.0.1

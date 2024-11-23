@@ -11,25 +11,49 @@ import tifffile
 from Propagation import Propagation
 from parameters import Parameters
 import os
+import yaml
 
 # Constants
 CANVAS_SIZE = 400  # Fixed canvas size
+CONFIG_FILE = "last_session.yaml"
 
-# Initialize session state for parameters if not exists
+# Initialize session state with saved parameters if available
 if 'params' not in st.session_state:
-    st.session_state.params = Parameters(
-        wavelength_um=1.0,
-        z_mm=50,
-        canvas_size_pixels=CANVAS_SIZE,
-        canvas_size_mm=10.0,
-        padding=True,
-        pad_factor=2,
-        pinhole_radius_inv_mm=2.0,
-        delta_mm=0.1,
-        use_edge_rolloff=True,
-        output_type='intensity',
-        propagation_model='fresnel'
-    )
+    if os.path.exists(CONFIG_FILE):
+        try:
+            st.session_state.params = Parameters.from_yaml(CONFIG_FILE)
+            st.session_state.params.canvas_size_pixels = CANVAS_SIZE  # Ensure canvas size is fixed
+        except Exception as e:
+            st.warning(f"Could not load saved parameters: {e}")
+            # Use default parameters
+            st.session_state.params = Parameters(
+                wavelength_um=1.0,
+                z_mm=50,
+                canvas_size_pixels=CANVAS_SIZE,
+                canvas_size_mm=10.0,
+                padding=True,
+                pad_factor=2,
+                pinhole_radius_inv_mm=2.0,
+                delta_mm=0.1,
+                use_edge_rolloff=True,
+                output_type='intensity',
+                propagation_model='fresnel'
+            )
+    else:
+        # Use default parameters
+        st.session_state.params = Parameters(
+            wavelength_um=1.0,
+            z_mm=50,
+            canvas_size_pixels=CANVAS_SIZE,
+            canvas_size_mm=10.0,
+            padding=True,
+            pad_factor=2,
+            pinhole_radius_inv_mm=2.0,
+            delta_mm=0.1,
+            use_edge_rolloff=True,
+            output_type='intensity',
+            propagation_model='fresnel'
+        )
     st.session_state.propagation_system = Propagation(st.session_state.params)
 
 if 'canvas_data' not in st.session_state:
@@ -75,9 +99,10 @@ with st.sidebar:
     # Drawing Controls section first
     st.header("Drawing Controls")
     
+    # Update drawing modes to include 'ellipse' and other tools
     drawing_mode = st.selectbox(
         "Drawing Tool", 
-        ("freedraw", "line", "rect", "circle", "transform"),
+        ("freedraw", "line", "rect", "circle", "ellipse", "transform"),
         index=0
     )
     
@@ -114,7 +139,7 @@ with st.sidebar:
             stroke_width=int(stroke_width),  # Convert to integer for canvas
             stroke_color=f"rgba(0, 0, 0, {stroke_opacity})",
             background_color="#FFFFFF",
-            background_image=None,
+            background_image=st.session_state.uploaded_mask if 'uploaded_mask' in st.session_state else None,
             update_streamlit=realtime_update,
             height=CANVAS_SIZE,
             width=CANVAS_SIZE,
@@ -177,41 +202,81 @@ with st.sidebar:
                 prop_model != st.session_state.params.propagation_model]):
             update_params(wavelength, z_distance, canvas_physical_size, 
                         pinhole_radius, use_pinhole, use_rolloff, prop_model)
+            save_params()  # Auto-save when parameters change
     
-    # Save button with Streamlit download
-    if st.button("Save Canvas and Intensity"):
-        if st.session_state.canvas_result and st.session_state.canvas_result.image_data is not None:
-            # Create mask TIFF
-            mask = (np.mean(st.session_state.canvas_result.image_data[:, :, :3], axis=2) * 65535 / 255).astype(np.uint16)
-            mask_bytes = BytesIO()
-            tifffile.imwrite(mask_bytes, mask)
-            mask_bytes.seek(0)
-            
-            # Create intensity TIFF
-            propagated_intensity = st.session_state.propagation_system.propagate(mask / 65535.0)
-            intensity_16bit = (propagated_intensity / propagated_intensity.max() * 65535).astype(np.uint16)
-            intensity_bytes = BytesIO()
-            tifffile.imwrite(intensity_bytes, intensity_16bit)
-            intensity_bytes.seek(0)
-            
-            # Create download buttons
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button(
-                    label="Download Mask",
-                    data=mask_bytes,
-                    file_name="mask.tiff",
-                    mime="image/tiff"
-                )
-            with col2:
-                st.download_button(
-                    label="Download Intensity",
-                    data=intensity_bytes,
-                    file_name="intensity.tiff",
-                    mime="image/tiff"
-                )
-        else:
-            st.error("No canvas data to save.")
+    # New collapsible section for Load and Save functionalities
+    with st.expander("Session Controls"):
+        # Load Mask
+        st.header("Load Mask")
+        uploaded_file = st.file_uploader("Upload Mask (TIFF)", type=['tiff', 'tif'])
+        
+        if uploaded_file is not None:
+            try:
+                # Load the mask
+                mask_data = tifffile.imread(uploaded_file)
+                
+                # Normalize to [0, 1] range if 16-bit
+                if mask_data.dtype == np.uint16:
+                    mask_data = mask_data.astype(np.float32) / 65535.0
+                elif mask_data.dtype == np.uint8:
+                    mask_data = mask_data.astype(np.float32) / 255.0
+                    
+                # Resize to match canvas if needed
+                if mask_data.shape != (CANVAS_SIZE, CANVAS_SIZE):
+                    from scipy.ndimage import zoom
+                    zoom_factor = CANVAS_SIZE / mask_data.shape[0]
+                    mask_data = zoom(mask_data, zoom_factor)
+                
+                # Store in session state for drawing
+                st.session_state.uploaded_mask = mask_data
+                st.success("Mask loaded successfully!")
+            except Exception as e:
+                st.error(f"Error loading mask: {e}")
+        
+        # Save Parameters
+        def save_params():
+            try:
+                st.session_state.params.to_yaml(CONFIG_FILE)
+                st.success("Parameters saved for next session!")
+            except Exception as e:
+                st.warning(f"Could not save parameters: {e}")
+        
+        st.button("Save Current Parameters", on_click=save_params)
+        
+        # Save Canvas and Intensity
+        if st.button("Save Canvas and Intensity"):
+            if st.session_state.canvas_result and st.session_state.canvas_result.image_data is not None:
+                # Create mask TIFF
+                mask = (np.mean(st.session_state.canvas_result.image_data[:, :, :3], axis=2) * 65535 / 255).astype(np.uint16)
+                mask_bytes = BytesIO()
+                tifffile.imwrite(mask_bytes, mask)
+                mask_bytes.seek(0)
+                
+                # Create intensity TIFF
+                propagated_intensity = st.session_state.propagation_system.propagate(mask / 65535.0)
+                intensity_16bit = (propagated_intensity / propagated_intensity.max() * 65535).astype(np.uint16)
+                intensity_bytes = BytesIO()
+                tifffile.imwrite(intensity_bytes, intensity_16bit)
+                intensity_bytes.seek(0)
+                
+                # Create download buttons
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.download_button(
+                        label="Download Mask",
+                        data=mask_bytes,
+                        file_name="mask.tiff",
+                        mime="image/tiff"
+                    )
+                with col2:
+                    st.download_button(
+                        label="Download Intensity",
+                        data=intensity_bytes,
+                        file_name="intensity.tiff",
+                        mime="image/tiff"
+                    )
+            else:
+                st.error("No canvas data to save.")
 
 # Main content area - only show propagated intensity (removed split columns)
 st.subheader("Propagated Intensity")

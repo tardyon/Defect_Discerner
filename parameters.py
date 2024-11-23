@@ -1,6 +1,7 @@
 # parameters.py
 
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
+import yaml
 
 @dataclass
 class Parameters:
@@ -135,3 +136,15 @@ class Parameters:
             float: Delta parameter in pixels.
         """
         return self.delta_mm / self.scaling_mm_per_pixel
+
+    def to_yaml(self, filepath: str):
+        """Save parameters to YAML file"""
+        with open(filepath, 'w') as f:
+            yaml.dump(asdict(self), f)
+
+    @classmethod
+    def from_yaml(cls, filepath: str):
+        """Load parameters from YAML file"""
+        with open(filepath, 'r') as f:
+            data = yaml.safe_load(f)
+        return cls(**data)

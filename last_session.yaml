@@ -1,0 +1,11 @@
+canvas_size_mm: 10.0
+canvas_size_pixels: 400
+delta_mm: 0.1
+output_type: intensity
+pad_factor: 2
+padding: true
+pinhole_radius_inv_mm: 2.0
+propagation_model: fresnel
+use_edge_rolloff: true
+wavelength_um: 1.0
+z_mm: 50

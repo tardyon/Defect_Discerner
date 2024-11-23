@@ -1,275 +1,312 @@
-import argparse
 import numpy as np
-import matplotlib.pyplot as plt
-from PIL import Image
-from Mask_Maker import MaskMaker
 from parameters import Parameters
+from Mask_Maker import MaskMaker
+from Propagation import Propagation
+from loss_functions import huber_loss
+from regularizations import total_variation, shape_bias
+from solvers import FISTASolver
+from skimage.metrics import structural_similarity as ssim
+import matplotlib.pyplot as plt
+from inverseParameters import InverseParameters
+from PIL import Image
 import tkinter as tk
-from tkinter import filedialog   
+from tkinter import filedialog
+import os
+from tkinter import messagebox
+import tifffile as tiff
 
-def load_prior_mask(file_path):
-    """Load an image file and convert it to a normalized grayscale mask."""
-    try:
-        img = Image.open(file_path)
-        if img.mode == 'I;16':
-            mask = np.array(img, dtype=np.float32) / 65535.0  # Normalize 16-bit to [0,1]
-        elif img.mode == 'L':
-            mask = np.array(img, dtype=np.float32) / 255.0    # Normalize 8-bit to [0,1]
-        else:
-            img = img.convert('L')
-            mask = np.array(img, dtype=np.float32) / 255.0    # Normalize other modes to [0,1]
-        return mask
-    except Exception as e:
-        print(f"Error loading image {file_path}: {e}")
-        return None
-
-def select_prior_images():
-    """Open Mac Finder to select prior image files."""
+def select_file(title, filetypes):
+    """Simplified file selection dialog."""
+    import tkinter as tk
+    from tkinter import filedialog
+    
     root = tk.Tk()
-    root.withdraw()  # Hide the root window
-    file_paths = filedialog.askopenfilenames(
-        title="Select Prior Image Files",
-        filetypes=[("Image Files", "*.png *.jpeg *.jpg *.tiff *.tif")]
+    root.withdraw()
+    # Don't use topmost attribute
+    file_path = filedialog.askopenfilename(
+        title=title,
+        filetypes=[(desc, f"*{ext}") for desc, ext in filetypes]
     )
-    root.destroy()  # Properly close the Finder dialog box
-    return list(file_paths)
+    root.quit()
+    root.destroy()
+    return file_path
 
-def create_random_disk_mask(mask_maker, num_disks, min_diameter, max_diameter, base_mask=None):
-    """
-    Create a mask with random disks, optionally overlaying on a base mask.
+def select_prior_type():
+    """GUI dialog for selecting prior type."""
+    root = tk.Tk()
+    root.title("Select Prior Type")
+    root.geometry("300x200")
     
-    Returns:
-        tuple: (mask, num_valid_disks, num_invalid_disks)
-    """
-    if base_mask is not None:
-        mask_maker.mask = base_mask.copy()
-        mask_maker.resize_mask((mask_maker.size_y_pixels, mask_maker.size_x_pixels))  # Ensure correct size
+    selected_type = tk.StringVar(value="random")
     
-    valid_disks = 0
-    invalid_disks = 0
+    def on_select():
+        root.quit()
     
-    for _ in range(num_disks):
-        diameter = np.random.uniform(min_diameter, max_diameter)
-        center_x = np.random.uniform(diameter/2, mask_maker.size_x_pixels - diameter/2)
-        center_y = np.random.uniform(diameter/2, mask_maker.size_y_pixels - diameter/2)
-        opacity = np.random.uniform(0, 1)
-        
-        if mask_maker.add_disk(center_x, center_y, diameter, opacity):
-            valid_disks += 1
-        else:
-            invalid_disks += 1
+    tk.Label(root, text="Choose prior type:").pack(pady=10)
+    tk.Radiobutton(root, text="Random", variable=selected_type, value="random").pack()
+    tk.Radiobutton(root, text="Load from file", variable=selected_type, value="load").pack()
+    tk.Radiobutton(root, text="Central disk", variable=selected_type, value="disk").pack()
+    tk.Button(root, text="OK", command=on_select).pack(pady=20)
     
-    return mask_maker.mask.copy(), valid_disks, invalid_disks
-
-def create_central_disk_mask(mask_maker, diameter_mm, opacity=0.8):
-    """Create a mask with a central disk of specified diameter."""
-    # Convert diameter from mm to pixels
-    diameter_pixels = diameter_mm * (mask_maker.size_x_pixels / mask_maker.size_x_mm)
-    
-    # Calculate center coordinates
-    center_x = mask_maker.size_x_pixels / 2
-    center_y = mask_maker.size_y_pixels / 2
-    
-    # Create new mask and add disk
-    mask_maker.mask = np.ones((mask_maker.size_y_pixels, mask_maker.size_x_pixels), dtype=np.complex128)
-    mask_maker.add_disk(center_x, center_y, diameter_pixels, opacity)
-    return mask_maker.mask.copy()
+    root.mainloop()
+    prior_type = selected_type.get()
+    root.destroy()
+    return prior_type
 
 def main():
-    # Parse command-line arguments
-    parser = argparse.ArgumentParser(description="Test MaskMaker with various priors.")
-    # Removed prior_images argument
-    # parser.add_argument('--prior_images', nargs='*', help='Paths to prior image files (png, jpeg, tiff)', default=[])
-    args = parser.parse_args()
-
-    # Load parameters
+    # Initialize parameters
     params = Parameters()
-    size_x_pixels = params.canvas_size_pixels
-    size_y_pixels = params.canvas_size_pixels
-    size_x_mm = params.canvas_size_mm
-    size_y_mm = params.canvas_size_mm
-
-    # Load prior masks
-    # Removed prior masks loading
-    # prior_masks = []
-    # for img_path in args.prior_images:
-    #     mask = load_prior_mask(img_path)
-    #     if mask is not None:
-    #         prior_masks.append(mask)
-
-    # Option to select prior images via Mac Finder
-    prior_images = select_prior_images()
-    prior_masks = []
-    for img_path in prior_images:
-        mask = load_prior_mask(img_path)
-        if mask is not None:
-            prior_masks.append(mask)
-
-    # Initialize MaskMaker
-    # Removed initialization with prior masks
-    mask_maker = MaskMaker(size_x_pixels, size_y_pixels, size_x_mm, size_y_mm)
+    inverse_params = InverseParameters()
     
-    # Generate masks
-    mask_types = ['random_real', 'random_complex', 'combination']
-    masks = {}
-    for mtype in mask_types:
-        getattr(mask_maker, mtype)()
-        masks[mtype] = mask_maker.mask.copy()
+    # Modified file selection
+    file_path = select_file(
+        "Select an image file",
+        [
+            ("PNG", ".png"),
+            ("JPEG", ".jpg"),
+            ("JPEG", ".jpeg"),
+            ("GIF", ".gif"),
+            ("TIFF", ".tiff"),
+            ("TIFF", ".tif")
+        ]
+    )
+    
+    if not file_path:
+        print("No file selected.")
+        return
 
-    # Create central disks masks
-    sizes = [0.1, 0.5, 1.0]  # diameters in mm
-    opacities = [0.8] * 3    # example opacities
-    central_disks_masks = []
-    for size in sizes:
-        mask_maker = MaskMaker(size_x_pixels, size_y_pixels, size_x_mm, size_y_mm)
-        central_disks_masks.append(create_central_disk_mask(mask_maker, size))
+    # Load the image directly using tifffile for proper 16-bit handling
+    original_image = tiff.imread(file_path)
+    
+    # Keep original_image as is for display (already in 16-bit format)
+    # Create a normalized float32 version for processing
+    image_array = original_image.astype(np.float32)
+    print(f"Original image stats:")
+    print(f"  Shape: {original_image.shape}")
+    print(f"  Dtype: {original_image.dtype}")
+    print(f"  Min: {original_image.min()}")
+    print(f"  Max: {original_image.max()}")
+    print(f"  Mean: {original_image.mean()}")
 
-    # Plot masks
-    num_masks = len(masks) + len(central_disks_masks) + len(prior_masks)
-    plt.figure(figsize=(15, 15), constrained_layout=True)  # Adjusted figure size for 3x3 grid
+    # Normalize the processing array to [0,1] range
+    image_array = (image_array - image_array.min()) / (image_array.max() - image_array.min())
+    
+    # Simulate observed intensity using the forward model
+    propagation = Propagation(params)
+    I_observed = np.clip(image_array, 0, 1)  # Ensure values between 0 and 1
+    print(f"I_observed stats: min={I_observed.min()}, max={I_observed.max()}, mean={I_observed.mean()}")
 
-    # Plot random and combination masks
-    idx = 1
-    for mtype, mask in masks.items():
-        ax = plt.subplot(3, 3, idx)
-        im = ax.imshow(np.abs(mask), cmap='gray')
-        ax.set_title(mtype)
-        ax.set_xlabel('Millimeters')
-        ax.set_ylabel('Millimeters')
-        ax.set_aspect('equal')  # Maintain aspect ratio
+    # Update canvas size parameters based on the image size
+    params.canvas_size_pixels = I_observed.shape[1]
+    params.canvas_size_mm = 10.0  # Adjust as needed based on scaling
 
-        cbar = plt.colorbar(im, ax=ax)
-        cbar.set_label('Intensity')
-        idx += 1
+    # Replace command line input with GUI selection
+    prior_type = select_prior_type()
+    inverse_params.prior_type = prior_type
 
-    # Plot central disk masks
-    for disk_mask, size in zip(central_disks_masks, sizes):
-        ax = plt.subplot(3, 3, idx)
-        im = ax.imshow(np.abs(disk_mask), cmap='gray')
-        ax.set_title(f'Central Disk {size} mm')
-        ax.set_xlabel('Millimeters')
-        ax.set_ylabel('Millimeters')
-        ax.set_aspect('equal')  # Maintain aspect ratio
-
-        cbar = plt.colorbar(im, ax=ax)
-        cbar.set_label('Intensity')
-        idx += 1
-
-    # Plot prior raw and prior mask
-    for prior_mask in prior_masks:
-        ax = plt.subplot(3, 3, idx)
-        im = ax.imshow(np.abs(prior_mask), cmap='gray')
-        ax.set_title('Prior Mask')
-        ax.set_xlabel('Millimeters')
-        ax.set_ylabel('Millimeters')
-        ax.set_aspect('equal')  # Maintain aspect ratio
-
-        cbar = plt.colorbar(im, ax=ax)
-        cbar.set_label('Intensity')
-        idx += 1
-
-    plt.show(block=False)  # Show the first figure without blocking
-
-    # Test set_pixels by modifying the user-selected mask
-    if prior_masks:
-        modified_masks = []
-        num_pixels_to_set = [10, 50, 100]
-        for num_pixels in num_pixels_to_set:
-            # Print array dimensions for debugging
-            print(f"Prior mask shape: {prior_masks[0].shape}")
-            
-            modified_mask_maker = MaskMaker(size_x_pixels, size_y_pixels, size_x_mm, size_y_mm, prior_masks[0].copy())
-            values = np.random.rand(num_pixels)
-            
-            # Explicitly ensure coordinates are within array bounds
-            array_height, array_width = prior_masks[0].shape
-            x_coords = np.random.randint(0, array_width, num_pixels)
-            y_coords = np.random.randint(0, array_height, num_pixels)
-            
-            # Create locations array and verify bounds
-            locations = np.stack((x_coords, y_coords), axis=1)
-            print(f"Max x coord: {x_coords.max()}, Max y coord: {y_coords.max()}")
-            print(f"Array dimensions: {array_width}x{array_height}")
-            
-            modified_mask_maker.set_pixels(values, locations)
-            modified_masks.append(modified_mask_maker.mask.copy())
-
-        # Plot modified masks
-        plt.figure(figsize=(15, 15), constrained_layout=True)  # Adjusted figure size for 3x3 grid
-        idx = 1
-        for num_pixels, modified_mask in zip(num_pixels_to_set, modified_masks):
-            ax = plt.subplot(3, 3, idx)
-            im = ax.imshow(np.abs(modified_mask), cmap='gray')
-            ax.set_title(f'Modified Mask with {num_pixels} Pixels')
-            ax.set_xlabel('Millimeters')
-            ax.set_ylabel('Millimeters')
-            ax.set_aspect('equal')  # Maintain aspect ratio
-
-            cbar = plt.colorbar(im, ax=ax)
-            cbar.set_label('Intensity')
-            idx += 1
-
-        plt.show()
-
-    # Create random disk masks
-    random_disk_masks = []
-    valid_counts = []
-    invalid_counts = []
-    disk_counts = [10, 50, 100]
-    for num_disks in disk_counts:
-        disk_maker = MaskMaker(size_x_pixels, size_y_pixels, size_x_mm, size_y_mm)
-        mask, valid, invalid = create_random_disk_mask(
-            disk_maker, num_disks, min_diameter=3, max_diameter=30
+    # Initialize MaskMaker with prior
+    mask_maker = MaskMaker(
+        size_x_pixels=params.canvas_size_pixels,
+        size_y_pixels=params.canvas_size_pixels,
+        size_x_mm=params.canvas_size_mm,
+        size_y_mm=params.canvas_size_mm
+    )
+    if prior_type == 'random':
+        mask_maker.random_real()
+    elif prior_type == 'disk':
+        mask_maker.central_disk(diameter_fraction=0.2, opacity=0.0)
+    elif prior_type == 'load':
+        # Ask user to select a prior mask file using the custom function
+        prior_file_path = select_file(
+            "Select prior mask file",
+            [
+                ("Numpy", ".npy"),
+                ("PNG", ".png"),
+                ("JPEG", ".jpg"),
+                ("JPEG", ".jpeg"),
+                ("GIF", ".gif"),
+                ("TIFF", ".tiff"),
+                ("TIFF", ".tif")
+            ]
         )
-        random_disk_masks.append(mask)
-        valid_counts.append(valid)
-        invalid_counts.append(invalid)
+        if not prior_file_path:
+            print("No prior file selected.")
+            return
+        if prior_file_path.endswith('.npy'):
+            prior_mask = np.load(prior_file_path)
+        else:
+            prior_image = Image.open(prior_file_path)
+            prior_mask = np.array(prior_image, dtype=np.float32)
+        mask_maker.mask = prior_mask
+    else:
+        print("Invalid prior type selected.")
+        return
+    M_init = mask_maker.mask
 
-    # Plot random disk masks
-    plt.figure(figsize=(15, 5), constrained_layout=True)
-    for idx, (num_disks, disk_mask, valid, invalid) in enumerate(zip(disk_counts, random_disk_masks, valid_counts, invalid_counts), 1):
-        ax = plt.subplot(1, 3, idx)
-        im = ax.imshow(np.abs(disk_mask), cmap='gray')
-        ax.set_title(f'{num_disks} Random Disks\n({valid} valid, {invalid} invalid)')
-        ax.set_xlabel('Pixels')
-        ax.set_ylabel('Pixels')
-        ax.set_aspect('equal')
-        plt.colorbar(im, ax=ax, label='Opacity')
+    # Ensure the prior matches the observed image size
+    if M_init.shape != I_observed.shape:
+        M_init = np.resize(M_init, I_observed.shape)
 
-    # Create and display all figures
-    plt.ion()  # Turn on interactive mode
+    # Replace the hardcoded regularizers with parameters from inverse_params
+    ellipse_params = inverse_params.get_ellipse_params(params.canvas_size_pixels)
+    regularizers = {
+        'tv': lambda M: inverse_params.tv_weight * total_variation(M),
+        'shape': lambda M: inverse_params.shape_weight * shape_bias(M, ellipse_params)
+    }
+
+    constraints = {
+        'non_negativity': lambda M: np.clip(M, 0, 1),
+        'upper_bound': lambda M: np.clip(M, 0, 1)
+    }
     
-    # First figure (existing masks)
-    fig1 = plt.figure(figsize=(15, 15))
-    # ... existing plotting code for first figure ...
+    # Define the forward operator
+    def forward_operator(M):
+        return propagation.propagate(M)
     
-    # Second figure (modified masks)
-    if prior_masks:
-        fig2 = plt.figure(figsize=(15, 15))
-        # ... existing plotting code for second figure ...
-    
-    # Third figure (random disks)
-    fig3 = plt.figure(figsize=(15, 5))
-    disk_counts = [10, 50, 100]
-    base_mask = prior_masks[0].copy() if prior_masks else None
-    
-    for idx, num_disks in enumerate(disk_counts, 1):
-        disk_maker = MaskMaker(size_x_pixels, size_y_pixels, size_x_mm, size_y_mm)
-        mask, valid, invalid = create_random_disk_mask(
-            disk_maker, num_disks, min_diameter=3, max_diameter=30, base_mask=base_mask
-        )
+    # Create directory for mask evolution
+    os.makedirs("MasksEvolutions", exist_ok=True)
+
+    # Convert float arrays to 16-bit for visualization
+    def float_to_uint16(arr):
+        arr = np.clip(arr, 0, 1)
+        return (arr * 65535).astype(np.uint16)
+
+    # Track loss history
+    loss_history = []
+    # Use save_interval from inverse_params
+    def iteration_callback(M_current, iteration):
+        if iteration % inverse_params.save_interval == 0:
+            tiff.imwrite(f"MasksEvolutions/mask_iter_{iteration:03d}.tiff", 
+                        float_to_uint16(M_current))
+            I_current = forward_operator(M_current)
+            loss = huber_loss(I_observed, I_current)
+            loss_history.append((iteration, loss))
+
+    # Add import for other solvers
+    from solvers import FISTASolver, NesterovSolver, PGDSolver, ADMMSolver
+
+    # Replace single solver with multiple solvers
+    solvers = {
+        'FISTA': FISTASolver(forward_operator, huber_loss, regularizers, constraints, callback=iteration_callback),
+        'Nesterov': NesterovSolver(forward_operator, huber_loss, regularizers, constraints),
+        'PGD': PGDSolver(forward_operator, huber_loss, regularizers, constraints),
+        'ADMM': ADMMSolver(forward_operator, huber_loss, regularizers, constraints)
+    }
+
+    # Track results for each solver
+    results = {}
+    loss_histories = {}
+
+    for solver_name, solver in solvers.items():
+        print(f"\nRunning {solver_name} solver...")
         
-        ax = plt.subplot(1, 3, idx)
-        im = ax.imshow(np.abs(mask), cmap='gray')
-        ax.set_title(f'{num_disks} Disks\n({valid} valid, {invalid} invalid)')
-        ax.set_xlabel('Pixels')
-        ax.set_ylabel('Pixels')
-        ax.set_aspect('equal')
-        plt.colorbar(im, ax=ax, label='Opacity')
+        # Reset loss history for this solver
+        loss_history = []
+        
+        # Modify callback to store losses for this specific solver
+        def iteration_callback(M_current, iteration, solver_name=solver_name):
+            if iteration % inverse_params.save_interval == 0:
+                I_current = forward_operator(M_current)
+                loss = huber_loss(I_observed, I_current)
+                loss_history.append((iteration, loss))
+                tiff.imwrite(f"MasksEvolutions/{solver_name}_iter_{iteration:03d}.tiff", 
+                            float_to_uint16(M_current))
+
+        # Set the callback if the solver supports it
+        if hasattr(solver, 'callback'):
+            solver.callback = iteration_callback
+
+        # Perform reconstruction with solver-specific parameters
+        if solver_name == 'ADMM':
+            M_reconstructed = solver.solve(
+                I_observed,
+                M_init.copy(),
+                max_iter=inverse_params.max_iter,
+                rho=inverse_params.admm_rho  # ADMM-specific parameter
+            )
+        else:
+            M_reconstructed = solver.solve(
+                I_observed,
+                M_init.copy(),
+                max_iter=inverse_params.max_iter,
+                learning_rate=inverse_params.learning_rate
+            )
+
+        # Store results
+        results[solver_name] = M_reconstructed
+        loss_histories[solver_name] = loss_history
+
+    # Remove the old plotting sections and replace with this single plotting section
+    for solver_name, M_reconstructed in results.items():
+        # Create a new figure for each solver with 2x3 grid
+        fig = plt.figure(figsize=(24, 12))
+        plt.suptitle(f'{solver_name} Solver Results', fontsize=16, y=0.95)
+        
+        # Define subplot positions
+        subplot_positions = {
+            'original': 1,    # Top left
+            'prior': 2,       # Top middle
+            'reconstructed': 3, # Top right
+            'propagation': 4,  # Bottom left 
+            'loss': 5         # Bottom middle
+        }
+        
+        # 1. Original Image (Top left)
+        plt.subplot(2, 3, subplot_positions['original'])
+        plt.title('Original Input Image')
+        plt.imshow(original_image, cmap='gray')
+        plt.colorbar(label='Intensity (16-bit)')
+        plt.axis('off')
+        
+        # 2. Prior Mask (Top middle)
+        plt.subplot(2, 3, subplot_positions['prior'])
+        plt.title('Prior Mask')
+        plt.imshow(float_to_uint16(M_init), cmap='gray')
+        plt.colorbar(label='Intensity (16-bit)')
+        plt.axis('off')
+        
+        # 3. Reconstructed Mask (Top right)
+        plt.subplot(2, 3, subplot_positions['reconstructed'])
+        mse = np.mean((M_reconstructed - I_observed)**2)
+        ssim_index = ssim(I_observed, M_reconstructed, data_range=1.0)
+        plt.title(f'Reconstructed Mask\nMSE: {mse:.6f}\nSSIM: {ssim_index:.6f}')
+        plt.imshow(float_to_uint16(M_reconstructed), cmap='gray')
+        plt.colorbar(label='Intensity (16-bit)')
+        plt.axis('off')
+        
+        # 4. Forward Propagation (Bottom left)
+        plt.subplot(2, 3, subplot_positions['propagation'])
+        I_reconstructed = propagation.propagate(M_reconstructed)
+        plt.title('Reconstructed Propagation')
+        plt.imshow(float_to_uint16(I_reconstructed), cmap='gray')
+        plt.colorbar(label='Intensity (16-bit)')
+        plt.axis('off')
+        
+        # 5. Loss History (Bottom middle)
+        if loss_histories[solver_name]:
+            plt.subplot(2, 3, subplot_positions['loss'])
+            iterations, losses = zip(*loss_histories[solver_name])
+            plt.semilogy(iterations, losses, 'b-', linewidth=2)
+            plt.title('Loss History')
+            plt.xlabel('Iteration')
+            plt.ylabel('Loss (log scale)')
+            plt.grid(True, which="both", ls="-", alpha=0.2)
+            plt.minorticks_on()
+        
+        # Adjust layout
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        
+        # Save the figure
+        plt.savefig(f'MasksEvolutions/{solver_name}_results.png', dpi=300, bbox_inches='tight')
     
-    # Display all figures
     plt.show()
-    input("Press Enter to close all figures...")  # Keep figures open until user input
+
+    # Save the original image too
+    tiff.imwrite('MasksEvolutions/original_input.tiff', original_image)
+
+    # Save the results in 16-bit TIFF format
+    tiff.imwrite('MasksEvolutions/debug_I_observed.tiff', float_to_uint16(I_observed))
+    tiff.imwrite('MasksEvolutions/debug_M_reconstructed.tiff', float_to_uint16(M_reconstructed))
 
 if __name__ == "__main__":
     main()

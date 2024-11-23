@@ -156,14 +156,7 @@ class Propagation:
     def propagate(self, mask_array: np.ndarray) -> np.ndarray:
         """
         Perform Fresnel or Angular Spectrum propagation on the input mask array.
-
-        Parameters:
-            mask_array (np.ndarray): Input 2D array (can be complex64) representing the initial field.
-
-        Returns:
-            np.ndarray: Output array after propagation.
-                        - If output_type is 'intensity', returns the intensity as float32.
-                        - If output_type is 'complex_field', returns the complex field as complex64.
+        Returns real-valued intensity.
         """
         # Apply padding if enabled
         if self.params.padding:
@@ -190,11 +183,6 @@ class Propagation:
         if self.params.padding:
             U2 = self._crop_array(U2)
 
-        # Select output type
-        if self.params.output_type == 'intensity':
-            intensity = np.abs(U2)**2
-            return intensity.astype(np.float32)  # Removed duplicated return
-        elif self.params.output_type == 'complex_field':
-            return U2.astype(np.complex64)
-        else:
-            raise ValueError("Invalid output_type. Choose 'intensity' or 'complex_field'.")
+        # Always return real-valued intensity
+        intensity = np.abs(U2)**2
+        return intensity.astype(np.float32)

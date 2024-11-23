@@ -18,28 +18,17 @@ class MaskMaker:
         self.size_x_mm = size_x_mm
         self.size_y_mm = size_y_mm
         if prior_mask is not None:
-            self.mask = prior_mask.astype(np.complex128)
-            if not np.iscomplexobj(prior_mask):
-                self.mask[self.mask.real < 0] = 0  # Normalize real prior masks to have no negative values
+            self.mask = prior_mask.astype(np.float32)
+            self.mask = np.clip(self.mask, 0, 1)  # Ensure values between 0 and 1
         else:
-            self.mask = np.zeros((self.size_y_pixels, self.size_x_pixels), dtype=np.complex128)
+            self.mask = np.zeros((self.size_y_pixels, self.size_x_pixels), dtype=np.float32)
 
     def random_real(self):
         """Initialize mask with random real values between 0 and 1."""
-        self.mask = np.random.rand(self.size_y_pixels, self.size_x_pixels).astype(np.complex128)
-
-    def random_complex(self):
-        """Initialize mask with random complex numbers."""
-        real_part = np.random.rand(self.size_y_pixels, self.size_x_pixels)
-        imag_part = np.random.rand(self.size_y_pixels, self.size_x_pixels)
-        self.mask = (real_part + 1j * imag_part).astype(np.complex128)
-
-    def combination(self):
-        """Initialize mask with a combination of random real and complex values."""
-        real_mask = np.random.rand(self.size_y_pixels, self.size_x_pixels)
-        imag_mask = np.random.rand(self.size_y_pixels, self.size_x_pixels)
-        self.mask = (real_mask + 1j * imag_mask).astype(np.complex128)
-
+        self.mask = np.random.rand(self.size_y_pixels, self.size_x_pixels).astype(np.float32)
+        
+    # Remove combination method - no longer needed
+    
     def set_pixels(self, values, locations):
         """
         Set specific pixel values at given locations.
@@ -99,6 +88,23 @@ class MaskMaker:
         
         return fully_within_bounds
 
+    def central_disk(self, diameter_fraction=0.2, opacity=0.0):
+        """Initialize mask with a central disk.
+        
+        Parameters:
+            diameter_fraction (float): Fraction of the smallest dimension to use as diameter
+            opacity (float): Opacity of the disk (0.0 is fully opaque, 1.0 is fully transparent)
+        """
+        min_dimension = min(self.size_x_pixels, self.size_y_pixels)
+        diameter = min_dimension * diameter_fraction
+        center_x = self.size_x_pixels // 2
+        center_y = self.size_y_pixels // 2
+        
+        # Initialize with fully transparent background
+        self.mask = np.ones((self.size_y_pixels, self.size_x_pixels), dtype=np.float32)
+        # Add the disk
+        self.add_disk(center_x, center_y, diameter, opacity)
+
     def resize_mask(self, new_size):
         """
         Resize the mask to the specified new size.
@@ -107,4 +113,4 @@ class MaskMaker:
             new_size (tuple): New size as (height, width).
         """
         zoom_factors = (new_size[0] / self.mask.shape[0], new_size[1] / self.mask.shape[1])
-        self.mask = zoom(self.mask, zoom_factors, order=1).astype(np.complex128)
+        self.mask = zoom(self.mask, zoom_factors, order=1).astype(np.float32)

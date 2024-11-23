@@ -16,6 +16,14 @@ Defect Discerner is a Python-based simulation tool for studying and visualizing 
 
 ---
 
+## New Features
+
+- **User-Provided Masks**: You can now select an image file (PNG, GIF, JPG, TIFF) to use as the true mask for simulations.
+- **Normalization**: The selected image is normalized to have a mean around 1 and positive values ≥ 0.
+- **Inverse Parameters Configuration**: A new `InverseParameters` class allows you to control solver settings, select priors, and update methods.
+
+---
+
 ## Installation
 
 ### Requirements
@@ -24,6 +32,7 @@ Defect Discerner is a Python-based simulation tool for studying and visualizing 
   - `numpy`
   - `matplotlib`
   - `streamlit-drawable-canvas`
+  - `Pillow>=8.0.0`: For image loading and processing.
 
 Install the dependencies using:
 

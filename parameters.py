@@ -34,13 +34,13 @@ class Parameters:
         propagation_model (str): Propagation model to use, either 'fresnel' or 'angular_spectrum' (default: 'fresnel').
     """
 
-    wavelength_um: float = 0.5            # Wavelength in microns (default: 0.5 µm)
-    z_mm: float = 50.0                    # Propagation distance in millimeters (default: 50 mm)
+    wavelength_um: float = 1            # Wavelength in microns (default: 0.5 µm)
+    z_mm: float = 0.0                    # Propagation distance in millimeters (default: 50 mm)
     output_type: str = 'intensity'        # 'intensity' or 'complex_field' (default: 'intensity')
     padding: bool = True                  # Whether to use padding to optimize FFT (default: True)
     pad_factor: int = 2                   # Padding factor (default: 2)
     use_edge_rolloff: bool = False        # Whether to apply edge roll-off using erf (default: False)
-    canvas_size_pixels: int = 512         # Original canvas size in pixels (default: 512)
+    canvas_size_pixels: int = 400         # Original canvas size in pixels (default: 512)
     canvas_size_mm: float = 10.0          # Physical size of the canvas in millimeters (default: 10 mm)
     pinhole_radius_inv_mm: float = 2.0    # Pinhole radius as cycles per mm (default: 2.0 cycles/mm)
     delta_mm: float = 0.01                # Parameter for edge roll-off function in millimeters (default: 0.01 mm)
@@ -114,7 +114,7 @@ class Parameters:
         Returns:
             float: Wavelength in pixels.
         """
-        return self.wavelength_um / (self.scaling_mm_per_pixel * 1000.0)
+        return self.wavelength_um * 1e-3 / self.scaling_mm_per_pixel  # Convert µm to mm
 
     @property
     def z_pixels(self) -> float:
@@ -129,7 +129,7 @@ class Parameters:
     @property
     def pinhole_radius_inv_pixels(self) -> float:
         """
-        Convert pinhole radius from cycles per millimeter to pixel units.
+        Convert pinhole radius from cycles per millimeter to cycles per pixel.
 
         Returns:
             float: Pinhole radius in cycles per pixel.

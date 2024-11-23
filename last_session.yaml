@@ -1,5 +1,5 @@
 canvas_size_mm: 10.0
-canvas_size_pixels: 800
+canvas_size_pixels: 400
 delta_mm: 0.1
 output_type: intensity
 pad_factor: 2

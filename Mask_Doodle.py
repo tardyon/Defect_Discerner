@@ -14,7 +14,8 @@ import os
 import yaml
 
 # Constants
-CANVAS_SIZE = 400  # Fixed canvas size
+# Removed fixed CANVAS_SIZE
+# CANVAS_SIZE = 400  # Fixed canvas size
 CONFIG_FILE = "last_session.yaml"
 
 # Initialize session state with saved parameters if available
@@ -22,14 +23,15 @@ if 'params' not in st.session_state:
     if os.path.exists(CONFIG_FILE):
         try:
             st.session_state.params = Parameters.from_yaml(CONFIG_FILE)
-            st.session_state.params.canvas_size_pixels = CANVAS_SIZE  # Ensure canvas size is fixed
+            # Removed setting canvas_size_pixels to fixed CANVAS_SIZE
+            # st.session_state.params.canvas_size_pixels = CANVAS_SIZE  # Ensure canvas size is fixed
         except Exception as e:
             st.warning(f"Could not load saved parameters: {e}")
             # Use default parameters
             st.session_state.params = Parameters(
                 wavelength_um=1.0,
                 z_mm=50,
-                canvas_size_pixels=CANVAS_SIZE,
+                # canvas_size_pixels=CANVAS_SIZE,  # Removed fixed canvas size
                 canvas_size_mm=10.0,
                 padding=True,
                 pad_factor=2,
@@ -44,7 +46,7 @@ if 'params' not in st.session_state:
         st.session_state.params = Parameters(
             wavelength_um=1.0,
             z_mm=50,
-            canvas_size_pixels=CANVAS_SIZE,
+            # canvas_size_pixels=CANVAS_SIZE,  # Removed fixed canvas size
             canvas_size_mm=10.0,
             padding=True,
             pad_factor=2,
@@ -68,12 +70,12 @@ def calculate_stroke_width(stroke_mm, params):
     pixels_per_mm = params.canvas_size_pixels / params.canvas_size_mm
     return stroke_mm * pixels_per_mm
 
-def update_params(wavelength, z_distance, canvas_physical_size, pinhole_radius, use_pinhole, use_rolloff, prop_model):
+def update_params(wavelength, z_distance, canvas_physical_size, canvas_size_pixels, pinhole_radius, use_pinhole, use_rolloff, prop_model):
     """Update parameters without triggering a page rerun"""
     st.session_state.params = Parameters(
         wavelength_um=wavelength,
         z_mm=z_distance,
-        canvas_size_pixels=CANVAS_SIZE,
+        canvas_size_pixels=canvas_size_pixels,
         canvas_size_mm=canvas_physical_size,
         padding=True,
         pad_factor=2,
@@ -84,6 +86,14 @@ def update_params(wavelength, z_distance, canvas_physical_size, pinhole_radius, 
         propagation_model=prop_model
     )
     st.session_state.propagation_system = Propagation(st.session_state.params)
+
+# Define save_params at module level
+def save_params():
+    try:
+        st.session_state.params.to_yaml(CONFIG_FILE)
+        st.success("Parameters saved for next session!")
+    except Exception as e:
+        st.warning(f"Could not save parameters: {e}")
 
 # Streamlit app UI
 st.title("Interactive Mask Drawing and Propagation")
@@ -99,10 +109,10 @@ with st.sidebar:
     # Drawing Controls section first
     st.header("Drawing Controls")
     
-    # Update drawing modes to include 'ellipse' and other tools
+    # Update drawing modes to exclude 'ellipse'
     drawing_mode = st.selectbox(
         "Drawing Tool", 
-        ("freedraw", "line", "rect", "circle", "ellipse", "transform"),
+        ("freedraw", "line", "rect", "circle", "transform"),  # Removed 'ellipse'
         index=0
     )
     
@@ -134,6 +144,7 @@ with st.sidebar:
     # Drawing canvas after controls are defined
     st.subheader("Draw Mask")
     try:
+        # Replaced fixed CANVAS_SIZE with dynamic value from params
         canvas_result = st_canvas(
             fill_color="rgba(255, 255, 255, 0.0)",
             stroke_width=int(stroke_width),  # Convert to integer for canvas
@@ -141,8 +152,8 @@ with st.sidebar:
             background_color="#FFFFFF",
             background_image=st.session_state.uploaded_mask if 'uploaded_mask' in st.session_state else None,
             update_streamlit=realtime_update,
-            height=CANVAS_SIZE,
-            width=CANVAS_SIZE,
+            height=st.session_state.params.canvas_size_pixels,  # Dynamic canvas size
+            width=st.session_state.params.canvas_size_pixels,   # Dynamic canvas size
             drawing_mode=drawing_mode,
             point_display_radius=point_display_radius,
             key=f"canvas_{st.session_state.params.canvas_size_mm}",  # Force redraw on size change
@@ -159,9 +170,9 @@ with st.sidebar:
         # Wavelength control with slider and text input
         col1_wave, col2_wave = st.columns([3, 1])
         with col1_wave:
-            wavelength = st.slider("Wavelength", 0.0, 2.0, 1.0, 0.01)
+            wavelength = st.slider("Wavelength (µm)", 0.1, 10.0, 1.0, 0.01)  # Increased max to 100.0 µm and default to 20.0 µm
         with col2_wave:
-            wavelength = st.number_input("µm", value=wavelength, min_value=0.0, max_value=2.0, step=0.01, format="%.3f")
+            wavelength = st.number_input("µm", value=wavelength, min_value=0.1, max_value=100.0, step=0.01, format="%.1f")
         
         # Propagation distance control
         col1_z, col2_z = st.columns([3, 1])
@@ -174,9 +185,16 @@ with st.sidebar:
         st.warning("⚠️ Changing Canvas Size will reset your drawing!")
         col1_size, col2_size = st.columns([3, 1])
         with col1_size:
-            canvas_physical_size = st.slider("Canvas Size", 1.0, 100.0, 10.0, 0.1)
+            canvas_physical_size = st.slider("Canvas Size (mm)", 1.0, 100.0, 10.0, 0.1)
         with col2_size:
             canvas_physical_size = st.number_input("mm", value=canvas_physical_size, min_value=1.0, max_value=100.0, step=0.1, format="%.1f")
+        
+        # Canvas resolution control
+        col1_res, col2_res = st.columns([3, 1])
+        with col1_res:
+            canvas_size_pixels = st.slider("Canvas Resolution (pixels)", 100, 2000, st.session_state.params.canvas_size_pixels, 50)
+        with col2_res:
+            canvas_size_pixels = st.number_input("Pixels", value=canvas_size_pixels, min_value=100, max_value=2000, step=50)
         
         # Pinhole parameters with default True
         use_pinhole = st.checkbox("Use Pinhole Filter", True)
@@ -194,14 +212,20 @@ with st.sidebar:
         use_rolloff = st.checkbox("Use Edge Rolloff", True)
         
         # Update parameters immediately when any value changes
-        if any([wavelength != st.session_state.params.wavelength_um,
-                z_distance != st.session_state.params.z_mm,
-                canvas_physical_size != st.session_state.params.canvas_size_mm,
-                pinhole_radius != (st.session_state.params.pinhole_radius_inv_mm if use_pinhole else 0.0),
-                use_rolloff != st.session_state.params.use_edge_rolloff,
-                prop_model != st.session_state.params.propagation_model]):
-            update_params(wavelength, z_distance, canvas_physical_size, 
-                        pinhole_radius, use_pinhole, use_rolloff, prop_model)
+        if any([
+            wavelength != st.session_state.params.wavelength_um,
+            z_distance != st.session_state.params.z_mm,
+            canvas_physical_size != st.session_state.params.canvas_size_mm,
+            canvas_size_pixels != st.session_state.params.canvas_size_pixels,  # Added canvas_size_pixels
+            pinhole_radius != (st.session_state.params.pinhole_radius_inv_mm if use_pinhole else 0.0),
+            use_pinhole != (st.session_state.params.pinhole_radius_inv_mm > 0.0),  # Added check for use_pinhole change
+            use_rolloff != st.session_state.params.use_edge_rolloff,
+            prop_model != st.session_state.params.propagation_model
+        ]):
+            update_params(
+                wavelength, z_distance, canvas_physical_size,
+                canvas_size_pixels, pinhole_radius, use_pinhole, use_rolloff, prop_model
+            )
             save_params()  # Auto-save when parameters change
     
     # New collapsible section for Load and Save functionalities
@@ -222,9 +246,10 @@ with st.sidebar:
                     mask_data = mask_data.astype(np.float32) / 255.0
                     
                 # Resize to match canvas if needed
-                if mask_data.shape != (CANVAS_SIZE, CANVAS_SIZE):
+                expected_shape = (st.session_state.params.canvas_size_pixels, st.session_state.params.canvas_size_pixels)
+                if mask_data.shape != expected_shape:
                     from scipy.ndimage import zoom
-                    zoom_factor = CANVAS_SIZE / mask_data.shape[0]
+                    zoom_factor = st.session_state.params.canvas_size_pixels / mask_data.shape[0]
                     mask_data = zoom(mask_data, zoom_factor)
                 
                 # Store in session state for drawing
@@ -234,13 +259,6 @@ with st.sidebar:
                 st.error(f"Error loading mask: {e}")
         
         # Save Parameters
-        def save_params():
-            try:
-                st.session_state.params.to_yaml(CONFIG_FILE)
-                st.success("Parameters saved for next session!")
-            except Exception as e:
-                st.warning(f"Could not save parameters: {e}")
-        
         st.button("Save Current Parameters", on_click=save_params)
         
         # Save Canvas and Intensity
@@ -290,8 +308,8 @@ if st.session_state.canvas_result is not None and st.session_state.canvas_result
     
     # Create larger figure with physical units
     fig, ax = plt.subplots(figsize=(12, 12))
-    extent = [-canvas_physical_size/2, canvas_physical_size/2, 
-             -canvas_physical_size/2, canvas_physical_size/2]
+    extent = [-st.session_state.params.canvas_size_mm/2, st.session_state.params.canvas_size_mm/2, 
+             -st.session_state.params.canvas_size_mm/2, st.session_state.params.canvas_size_mm/2]
     im = ax.imshow(propagated_intensity, cmap="gray", extent=extent)
     plt.colorbar(im, ax=ax, label="Intensity")
     ax.set_xlabel("Position (mm)")

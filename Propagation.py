@@ -77,6 +77,10 @@ class Propagation:
         # Apply frequency filter (pinhole) if specified
         if pinhole_radius_inv_pixels > 0:
             self.H *= self.F_squared <= (pinhole_radius_inv_pixels)**2
+        else:
+            # Ensure that defraction limiting is still applied naturally
+            # No additional filtering; H contains inherent defraction effects
+            pass
 
     def _create_edge_rolloff(self) -> np.ndarray:
         """

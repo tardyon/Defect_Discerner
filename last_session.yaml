@@ -4,8 +4,8 @@ delta_mm: 0.1
 output_type: intensity
 pad_factor: 2
 padding: true
-pinhole_radius_inv_mm: 2.0
+pinhole_radius_inv_mm: 2.1
 propagation_model: fresnel
 use_edge_rolloff: true
-wavelength_um: 1.0
-z_mm: 50
+wavelength_um: 6.94
+z_mm: 50.0

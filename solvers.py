@@ -1,4 +1,5 @@
 import numpy as np
+from tqdm import tqdm  # Add import for progress bars
 
 class SolverBase:
     """
@@ -9,12 +10,14 @@ class SolverBase:
         loss_function (callable): Loss function for data fidelity.
         regularizers (dict): Dictionary of regularization functions.
         constraints (dict): Dictionary of constraint functions.
+        callback (callable, optional): Optional callback function for iterations.
     """
-    def __init__(self, forward_operator, loss_function, regularizers, constraints):
+    def __init__(self, forward_operator, loss_function, regularizers, constraints, callback=None):
         self.forward_operator = forward_operator
         self.loss_function = loss_function
         self.regularizers = regularizers
         self.constraints = constraints
+        self.callback = callback
 
     def solve(self, I_observed, M_init, **kwargs):
         """Abstract method to perform optimization."""
@@ -27,7 +30,7 @@ class NesterovSolver(SolverBase):
         y = M.copy()
         v = np.zeros_like(M)
         
-        for i in range(max_iter):
+        for i in tqdm(range(max_iter), desc="NesterovSolver"):
             grad = self._compute_gradient(I_observed, y)
             v_prev = v.copy()
             v = momentum * v - learning_rate * grad
@@ -37,6 +40,9 @@ class NesterovSolver(SolverBase):
             for constraint in self.constraints.values():
                 M = constraint(M)
             y = M + momentum * (M - M_prev)
+            # Callback if available
+            if hasattr(self, 'callback'):
+                self.callback(M, i)
         return M
     
     def _compute_gradient(self, I_observed, M):
@@ -62,7 +68,7 @@ class FISTASolver(SolverBase):
         Y = M.copy()
         t = 1
 
-        for i in range(1, max_iter + 1):
+        for i in tqdm(range(1, max_iter + 1), desc="FISTASolver"):
             grad = self._compute_gradient(I_observed, Y)
             M_prev = M.copy()
             M = Y - learning_rate * grad
@@ -125,7 +131,7 @@ class ADMMSolver(SolverBase):
         Z = M.copy()
         U = np.zeros_like(M)
         
-        for i in range(max_iter):
+        for i in tqdm(range(max_iter), desc="ADMMSolver"):
             # Update M by solving the proximal operator of the loss function
             grad = self._compute_gradient(I_observed, M)
             M = Z - U - grad / rho
@@ -137,6 +143,11 @@ class ADMMSolver(SolverBase):
             Z = self._proximal_operator(Z, 1 / rho)
             # Update dual variable U
             U += M - Z
+            
+            # Call callback if provided
+            if self.callback:
+                self.callback(M, i)
+                
         return M
 
     def _compute_gradient(self, I_observed, M):
@@ -160,7 +171,7 @@ class PGDSolver(SolverBase):
     def solve(self, I_observed, M_init, max_iter=100, learning_rate=1e-3):
         M = M_init.copy()
         
-        for i in range(max_iter):
+        for i in tqdm(range(max_iter), desc="PGDSolver"):
             grad = self._compute_gradient(I_observed, M)
             M = M - learning_rate * grad
             # Apply proximal operators for constraints
@@ -198,6 +209,12 @@ class PGDSolver(SolverBase):
         grad_y_forward = np.roll(M, -1, axis=0) - M
         grad_y_backward = M - np.roll(M, 1, axis=0)
         grad += grad_x_forward - grad_x_backward + grad_y_forward - grad_y_backward
+        return grad
+        grad += grad_x_forward - grad_x_backward + grad_y_forward - grad_y_backward
+
+    def _shape_gradient(self, M):
+        grad = 2 * (M - self.regularizers['shape'](M))
+        return grad
         return grad
 
     def _shape_gradient(self, M):

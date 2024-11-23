@@ -4,7 +4,7 @@ from Mask_Maker import MaskMaker
 from Propagation import Propagation
 from loss_functions import huber_loss
 from regularizations import total_variation, shape_bias
-from solvers import FISTASolver
+from solvers import ADMMSolver  # Only import ADMMSolver
 from skimage.metrics import structural_similarity as ssim
 import matplotlib.pyplot as plt
 from inverseParameters import InverseParameters
@@ -14,6 +14,7 @@ from tkinter import filedialog
 import os
 from tkinter import messagebox
 import tifffile as tiff
+from tqdm import tqdm  # Add import for progress bars
 
 def select_file(title, filetypes):
     """Simplified file selection dialog."""
@@ -182,122 +183,84 @@ def main():
             loss = huber_loss(I_observed, I_current)
             loss_history.append((iteration, loss))
 
-    # Add import for other solvers
-    from solvers import FISTASolver, NesterovSolver, PGDSolver, ADMMSolver
+    # Only use the ADMM solver
+    solver = ADMMSolver(forward_operator, huber_loss, regularizers, constraints, callback=iteration_callback)
 
-    # Replace single solver with multiple solvers
-    solvers = {
-        'FISTA': FISTASolver(forward_operator, huber_loss, regularizers, constraints, callback=iteration_callback),
-        'Nesterov': NesterovSolver(forward_operator, huber_loss, regularizers, constraints),
-        'PGD': PGDSolver(forward_operator, huber_loss, regularizers, constraints),
-        'ADMM': ADMMSolver(forward_operator, huber_loss, regularizers, constraints)
+    print(f"\nRunning ADMM solver...")
+    M_reconstructed = solver.solve(
+        I_observed,
+        M_init.copy(),
+        max_iter=inverse_params.max_iter,
+        rho=inverse_params.admm_rho
+    )
+
+    # Simplify results storage - only for ADMM
+    results = {'ADMM': M_reconstructed}
+    loss_histories = {'ADMM': loss_history}
+
+    # Plotting section for ADMM solver
+    solver_name = 'ADMM'
+    M_reconstructed = results[solver_name]
+    # Create a new figure for the solver with 2x3 grid
+    fig = plt.figure(figsize=(24, 12))
+    plt.suptitle(f'{solver_name} Solver Results', fontsize=16, y=0.95)
+    
+    # Define subplot positions
+    subplot_positions = {
+        'original': 1,    # Top left
+        'prior': 2,       # Top middle
+        'reconstructed': 3, # Top right
+        'propagation': 4,  # Bottom left 
+        'loss': 5         # Bottom middle
     }
-
-    # Track results for each solver
-    results = {}
-    loss_histories = {}
-
-    for solver_name, solver in solvers.items():
-        print(f"\nRunning {solver_name} solver...")
-        
-        # Reset loss history for this solver
-        loss_history = []
-        
-        # Modify callback to store losses for this specific solver
-        def iteration_callback(M_current, iteration, solver_name=solver_name):
-            if iteration % inverse_params.save_interval == 0:
-                I_current = forward_operator(M_current)
-                loss = huber_loss(I_observed, I_current)
-                loss_history.append((iteration, loss))
-                tiff.imwrite(f"MasksEvolutions/{solver_name}_iter_{iteration:03d}.tiff", 
-                            float_to_uint16(M_current))
-
-        # Set the callback if the solver supports it
-        if hasattr(solver, 'callback'):
-            solver.callback = iteration_callback
-
-        # Perform reconstruction with solver-specific parameters
-        if solver_name == 'ADMM':
-            M_reconstructed = solver.solve(
-                I_observed,
-                M_init.copy(),
-                max_iter=inverse_params.max_iter,
-                rho=inverse_params.admm_rho  # ADMM-specific parameter
-            )
-        else:
-            M_reconstructed = solver.solve(
-                I_observed,
-                M_init.copy(),
-                max_iter=inverse_params.max_iter,
-                learning_rate=inverse_params.learning_rate
-            )
-
-        # Store results
-        results[solver_name] = M_reconstructed
-        loss_histories[solver_name] = loss_history
-
-    # Remove the old plotting sections and replace with this single plotting section
-    for solver_name, M_reconstructed in results.items():
-        # Create a new figure for each solver with 2x3 grid
-        fig = plt.figure(figsize=(24, 12))
-        plt.suptitle(f'{solver_name} Solver Results', fontsize=16, y=0.95)
-        
-        # Define subplot positions
-        subplot_positions = {
-            'original': 1,    # Top left
-            'prior': 2,       # Top middle
-            'reconstructed': 3, # Top right
-            'propagation': 4,  # Bottom left 
-            'loss': 5         # Bottom middle
-        }
-        
-        # 1. Original Image (Top left)
-        plt.subplot(2, 3, subplot_positions['original'])
-        plt.title('Original Input Image')
-        plt.imshow(original_image, cmap='gray')
-        plt.colorbar(label='Intensity (16-bit)')
-        plt.axis('off')
-        
-        # 2. Prior Mask (Top middle)
-        plt.subplot(2, 3, subplot_positions['prior'])
-        plt.title('Prior Mask')
-        plt.imshow(float_to_uint16(M_init), cmap='gray')
-        plt.colorbar(label='Intensity (16-bit)')
-        plt.axis('off')
-        
-        # 3. Reconstructed Mask (Top right)
-        plt.subplot(2, 3, subplot_positions['reconstructed'])
-        mse = np.mean((M_reconstructed - I_observed)**2)
-        ssim_index = ssim(I_observed, M_reconstructed, data_range=1.0)
-        plt.title(f'Reconstructed Mask\nMSE: {mse:.6f}\nSSIM: {ssim_index:.6f}')
-        plt.imshow(float_to_uint16(M_reconstructed), cmap='gray')
-        plt.colorbar(label='Intensity (16-bit)')
-        plt.axis('off')
-        
-        # 4. Forward Propagation (Bottom left)
-        plt.subplot(2, 3, subplot_positions['propagation'])
-        I_reconstructed = propagation.propagate(M_reconstructed)
-        plt.title('Reconstructed Propagation')
-        plt.imshow(float_to_uint16(I_reconstructed), cmap='gray')
-        plt.colorbar(label='Intensity (16-bit)')
-        plt.axis('off')
-        
-        # 5. Loss History (Bottom middle)
-        if loss_histories[solver_name]:
-            plt.subplot(2, 3, subplot_positions['loss'])
-            iterations, losses = zip(*loss_histories[solver_name])
-            plt.semilogy(iterations, losses, 'b-', linewidth=2)
-            plt.title('Loss History')
-            plt.xlabel('Iteration')
-            plt.ylabel('Loss (log scale)')
-            plt.grid(True, which="both", ls="-", alpha=0.2)
-            plt.minorticks_on()
-        
-        # Adjust layout
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        
-        # Save the figure
-        plt.savefig(f'MasksEvolutions/{solver_name}_results.png', dpi=300, bbox_inches='tight')
+    
+    # 1. Original Image (Top left)
+    plt.subplot(2, 3, subplot_positions['original'])
+    plt.title('Original Input Image')
+    plt.imshow(original_image, cmap='gray')
+    plt.colorbar(label='Intensity (16-bit)')
+    plt.axis('off')
+    
+    # 2. Prior Mask (Top middle)
+    plt.subplot(2, 3, subplot_positions['prior'])
+    plt.title('Prior Mask')
+    plt.imshow(float_to_uint16(M_init), cmap='gray')
+    plt.colorbar(label='Intensity (16-bit)')
+    plt.axis('off')
+    
+    # 3. Reconstructed Mask (Top right)
+    plt.subplot(2, 3, subplot_positions['reconstructed'])
+    mse = np.mean((M_reconstructed - I_observed)**2)
+    ssim_index = ssim(I_observed, M_reconstructed, data_range=1.0)
+    plt.title(f'Reconstructed Mask\nMSE: {mse:.6f}\nSSIM: {ssim_index:.6f}')
+    plt.imshow(float_to_uint16(M_reconstructed), cmap='gray')
+    plt.colorbar(label='Intensity (16-bit)')
+    plt.axis('off')
+    
+    # 4. Forward Propagation (Bottom left)
+    plt.subplot(2, 3, subplot_positions['propagation'])
+    I_reconstructed = propagation.propagate(M_reconstructed)
+    plt.title('Reconstructed Propagation')
+    plt.imshow(float_to_uint16(I_reconstructed), cmap='gray')
+    plt.colorbar(label='Intensity (16-bit)')
+    plt.axis('off')
+    
+    # 5. Loss History (Bottom middle)
+    if loss_histories[solver_name]:
+        plt.subplot(2, 3, subplot_positions['loss'])
+        iterations, losses = zip(*loss_histories[solver_name])
+        plt.semilogy(iterations, losses, 'b-', linewidth=2)
+        plt.title('Loss History')
+        plt.xlabel('Iteration')
+        plt.ylabel('Loss (log scale)')
+        plt.grid(True, which="both", ls="-", alpha=0.2)
+        plt.minorticks_on()
+    
+    # Adjust layout
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    
+    # Save the figure
+    plt.savefig(f'MasksEvolutions/{solver_name}_results.png', dpi=300, bbox_inches='tight')
     
     plt.show()
 

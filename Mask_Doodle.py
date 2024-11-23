@@ -32,39 +32,11 @@ if 'params' not in st.session_state:
     if os.path.exists(CONFIG_FILE):
         try:
             st.session_state.params = Parameters.from_yaml(CONFIG_FILE)
-            # Removed setting canvas_size_pixels to fixed CANVAS_SIZE
-            # st.session_state.params.canvas_size_pixels = CANVAS_SIZE  # Ensure canvas size is fixed
         except Exception as e:
             st.warning(f"Could not load saved parameters: {e}")
-            # Use default parameters
-            st.session_state.params = Parameters(
-                wavelength_um=1.0,
-                z_mm=50,
-                # canvas_size_pixels=CANVAS_SIZE,  # Removed fixed canvas size
-                canvas_size_mm=10.0,
-                padding=True,
-                pad_factor=2,
-                pinhole_radius_inv_mm=2.0,
-                delta_mm=0.1,
-                use_edge_rolloff=True,
-                output_type='intensity',
-                propagation_model='fresnel'
-            )
+            st.session_state.params = Parameters()
     else:
-        # Use default parameters
-        st.session_state.params = Parameters(
-            wavelength_um=1.0,
-            z_mm=50,
-            # canvas_size_pixels=CANVAS_SIZE,  # Removed fixed canvas size
-            canvas_size_mm=10.0,
-            padding=True,
-            pad_factor=2,
-            pinhole_radius_inv_mm=2.0,
-            delta_mm=0.1,
-            use_edge_rolloff=True,
-            output_type='intensity',
-            propagation_model='fresnel'
-        )
+        st.session_state.params = Parameters()
     st.session_state.propagation_system = Propagation(st.session_state.params)
 
 if 'canvas_data' not in st.session_state:
@@ -80,29 +52,52 @@ def calculate_stroke_width(stroke_mm, params):
     return stroke_mm * pixels_per_mm
 
 def update_params(wavelength, z_distance, canvas_physical_size, canvas_size_pixels, pinhole_radius, use_pinhole, use_rolloff, prop_model):
-    """Update parameters without triggering a page rerun"""
+    """Update parameters and save them to file"""
+    # Create new Parameters instance with all values
     st.session_state.params = Parameters(
         wavelength_um=wavelength,
         z_mm=z_distance,
         canvas_size_pixels=canvas_size_pixels,
         canvas_size_mm=canvas_physical_size,
-        padding=True,
-        pad_factor=2,
+        padding=st.session_state.params.padding,  # Preserve existing value
+        pad_factor=st.session_state.params.pad_factor,  # Preserve existing value
         pinhole_radius_inv_mm=pinhole_radius if use_pinhole else 0.0,
-        delta_mm=0.1,
+        delta_mm=st.session_state.params.delta_mm,  # Preserve existing value
         use_edge_rolloff=use_rolloff,
-        output_type='intensity',
+        output_type=st.session_state.params.output_type,  # Preserve existing value
         propagation_model=prop_model
     )
+    
+    # Update propagation system
     st.session_state.propagation_system = Propagation(st.session_state.params)
+    
+    # Save parameters to file
+    save_params()
 
 # Define save_params at module level
 def save_params():
+    """Save all parameters to YAML file"""
     try:
-        st.session_state.params.to_yaml(CONFIG_FILE)
-        st.success("Parameters saved for next session!")
+        # Ensure all parameters are included in the save
+        params_dict = {
+            'wavelength_um': st.session_state.params.wavelength_um,
+            'z_mm': st.session_state.params.z_mm,
+            'canvas_size_pixels': st.session_state.params.canvas_size_pixels,
+            'canvas_size_mm': st.session_state.params.canvas_size_mm,
+            'padding': st.session_state.params.padding,
+            'pad_factor': st.session_state.params.pad_factor,
+            'pinhole_radius_inv_mm': st.session_state.params.pinhole_radius_inv_mm,
+            'delta_mm': st.session_state.params.delta_mm,
+            'use_edge_rolloff': st.session_state.params.use_edge_rolloff,
+            'output_type': st.session_state.params.output_type,
+            'propagation_model': st.session_state.params.propagation_model
+        }
+        
+        with open(CONFIG_FILE, 'w') as f:
+            yaml.dump(params_dict, f)
+        st.success("Parameters saved successfully!")
     except Exception as e:
-        st.warning(f"Could not save parameters: {e}")
+        st.error(f"Error saving parameters: {e}")
 
 # Streamlit app UI
 st.title("Interactive Mask Drawing and Propagation")
@@ -274,8 +269,9 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"Error loading mask: {e}")
         
-        # Save Parameters
-        st.button("Save Current Parameters", on_click=save_params)
+        # Save Parameters - update the button to use the new save_params function
+        if st.button("Save Current Parameters"):
+            save_params()
         
         # Save Canvas and Intensity
         if st.button("Save Canvas and Intensity"):

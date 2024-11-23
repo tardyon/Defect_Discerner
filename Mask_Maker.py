@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.ndimage import zoom
 
 class MaskMaker:
     """
@@ -39,36 +40,71 @@ class MaskMaker:
         imag_mask = np.random.rand(self.size_y_pixels, self.size_x_pixels)
         self.mask = (real_mask + 1j * imag_mask).astype(np.complex128)
 
-    def central_disks(self, sizes, opacities):
-        """
-        Create a mask with central disks of specified sizes and opacities.
-
-        Parameters:
-            sizes (list of float): Diameters of the disks in millimeters.
-            opacities (list of float): Opacities for each disk (values between 0 and 1).
-        """
-        # Create coordinate grids
-        x = np.linspace(-self.size_x_mm / 2, self.size_x_mm / 2, self.size_x_pixels)
-        y = np.linspace(-self.size_y_mm / 2, self.size_y_mm / 2, self.size_y_pixels)
-        X, Y = np.meshgrid(x, y)
-        R = np.sqrt(X**2 + Y**2)
-
-        self.mask = np.ones((self.size_y_pixels, self.size_x_pixels), dtype=np.complex128)
-        for diameter, opacity in zip(sizes, opacities):
-            radius = diameter / 2
-            disk = np.where(R <= radius, opacity, 1.0)
-            self.mask *= disk
-
     def set_pixels(self, values, locations):
         """
         Set specific pixel values at given locations.
 
         Parameters:
-            values (list of complex): Values to set.
-            locations (list of tuple): Corresponding (x, y) pixel indices.
+            values (list/array): Values between 0 and 1 to set at each location
+            locations (list/array): List of (x,y) integer pixel coordinates
         """
-        for value, (x_idx, y_idx) in zip(values, locations):
-            if 0 <= x_idx < self.size_x_pixels and 0 <= y_idx < self.size_y_pixels:
-                self.mask[y_idx, x_idx] = value
-            else:
-                raise IndexError(f"Pixel index ({x_idx}, {y_idx}) out of bounds.")
+        values = np.asarray(values)
+        locations = np.asarray(locations, dtype=np.int32)  # Force integer indices
+        
+        # Ensure coordinates are within bounds
+        mask = ((0 <= locations[:, 0]) & (locations[:, 0] < self.size_x_pixels) & 
+                (0 <= locations[:, 1]) & (locations[:, 1] < self.size_y_pixels))
+        
+        # Only set valid pixel locations
+        valid_values = values[mask]
+        valid_locations = locations[mask]
+        
+        for val, (x, y) in zip(valid_values, valid_locations):
+            self.mask[y, x] = val
+
+    def add_disk(self, center_x, center_y, diameter, opacity=0.0):
+        """
+        Add a disk to the mask at specified location.
+
+        Parameters:
+            center_x (float): X coordinate of disk center in pixels
+            center_y (float): Y coordinate of disk center in pixels
+            diameter (float): Diameter of disk in pixels
+            opacity (float): Opacity value between 0 and 1 (default 0.0, fully opaque)
+
+        Returns:
+            bool: True if disk was fully within bounds, False if partially or fully out of bounds
+        """
+        radius = diameter / 2
+        
+        # Check if disk would be fully out of bounds
+        if (center_x + radius < 0 or center_x - radius > self.size_x_pixels or
+            center_y + radius < 0 or center_y - radius > self.size_y_pixels):
+            return False
+
+        # Create coordinate grid for this disk
+        y, x = np.ogrid[:self.size_y_pixels, :self.size_x_pixels]
+        disk_mask = ((x - center_x)**2 + (y - center_y)**2 <= radius**2)
+        
+        # Check if disk is partially out of bounds
+        fully_within_bounds = (
+            center_x - radius >= 0 and 
+            center_x + radius < self.size_x_pixels and
+            center_y - radius >= 0 and 
+            center_y + radius < self.size_y_pixels
+        )
+        
+        # Apply disk to mask
+        self.mask[disk_mask] = opacity
+        
+        return fully_within_bounds
+
+    def resize_mask(self, new_size):
+        """
+        Resize the mask to the specified new size.
+
+        Parameters:
+            new_size (tuple): New size as (height, width).
+        """
+        zoom_factors = (new_size[0] / self.mask.shape[0], new_size[1] / self.mask.shape[1])
+        self.mask = zoom(self.mask, zoom_factors, order=1).astype(np.complex128)

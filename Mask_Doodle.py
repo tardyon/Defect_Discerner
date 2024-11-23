@@ -6,9 +6,11 @@ try:
 except ImportError:
     st.error("Failed to import streamlit_drawable_canvas. Please ensure it's installed correctly.")
     st.stop()
-
+from io import BytesIO
+import tifffile
 from Propagation import Propagation
 from parameters import Parameters
+import os
 
 # Constants
 CANVAS_SIZE = 400  # Fixed canvas size
@@ -30,10 +32,34 @@ if 'params' not in st.session_state:
     )
     st.session_state.propagation_system = Propagation(st.session_state.params)
 
+if 'canvas_data' not in st.session_state:
+    st.session_state.canvas_data = None
+if 'canvas_result' not in st.session_state:
+    st.session_state.canvas_result = None
+if 'stroke_width_mm' not in st.session_state:
+    st.session_state.stroke_width_mm = 0.5
+
 # Function to update stroke width
 def calculate_stroke_width(stroke_mm, params):
     pixels_per_mm = params.canvas_size_pixels / params.canvas_size_mm
     return stroke_mm * pixels_per_mm
+
+def update_params(wavelength, z_distance, canvas_physical_size, pinhole_radius, use_pinhole, use_rolloff, prop_model):
+    """Update parameters without triggering a page rerun"""
+    st.session_state.params = Parameters(
+        wavelength_um=wavelength,
+        z_mm=z_distance,
+        canvas_size_pixels=CANVAS_SIZE,
+        canvas_size_mm=canvas_physical_size,
+        padding=True,
+        pad_factor=2,
+        pinhole_radius_inv_mm=pinhole_radius if use_pinhole else 0.0,
+        delta_mm=0.1,
+        use_edge_rolloff=use_rolloff,
+        output_type='intensity',
+        propagation_model=prop_model
+    )
+    st.session_state.propagation_system = Propagation(st.session_state.params)
 
 # Streamlit app UI
 st.title("Interactive Mask Drawing and Propagation")
@@ -96,6 +122,8 @@ with st.sidebar:
             point_display_radius=point_display_radius,
             key=f"canvas_{st.session_state.params.canvas_size_mm}",  # Force redraw on size change
         )
+        if canvas_result.json_data is not None:
+            st.session_state.canvas_data = canvas_result.json_data
         st.session_state.canvas_result = canvas_result
     except Exception as e:
         st.error(f"Error creating canvas: {str(e)}")
@@ -117,7 +145,8 @@ with st.sidebar:
         with col2_z:
             z_distance = st.number_input("mm", value=z_distance, min_value=0.0, max_value=1000.0, step=0.1, format="%.1f")
         
-        # Canvas physical size control
+        # Canvas physical size control with warning
+        st.warning("⚠️ Changing Canvas Size will reset your drawing!")
         col1_size, col2_size = st.columns([3, 1])
         with col1_size:
             canvas_physical_size = st.slider("Canvas Size", 1.0, 100.0, 10.0, 0.1)
@@ -139,44 +168,52 @@ with st.sidebar:
         prop_model = st.selectbox("Propagation Model", ["fresnel", "angular_spectrum"])
         use_rolloff = st.checkbox("Use Edge Rolloff", True)
         
-        # Update parameters when canvas size changes
-        if canvas_physical_size != st.session_state.params.canvas_size_mm:
-            st.session_state.params = Parameters(
-                wavelength_um=wavelength,
-                z_mm=z_distance,
-                canvas_size_pixels=CANVAS_SIZE,
-                canvas_size_mm=canvas_physical_size,
-                padding=True,
-                pad_factor=2,
-                pinhole_radius_inv_mm=pinhole_radius,
-                delta_mm=0.1,
-                use_edge_rolloff=use_rolloff,
-                output_type='intensity',
-                propagation_model=prop_model
-            )
-            st.session_state.propagation_system = Propagation(st.session_state.params)
-            # Force canvas redraw using the new rerun method
-            st.rerun()
+        # Update parameters immediately when any value changes
+        if any([wavelength != st.session_state.params.wavelength_um,
+                z_distance != st.session_state.params.z_mm,
+                canvas_physical_size != st.session_state.params.canvas_size_mm,
+                pinhole_radius != (st.session_state.params.pinhole_radius_inv_mm if use_pinhole else 0.0),
+                use_rolloff != st.session_state.params.use_edge_rolloff,
+                prop_model != st.session_state.params.propagation_model]):
+            update_params(wavelength, z_distance, canvas_physical_size, 
+                        pinhole_radius, use_pinhole, use_rolloff, prop_model)
     
-    # Save button
+    # Save button with Streamlit download
     if st.button("Save Canvas and Intensity"):
         if st.session_state.canvas_result and st.session_state.canvas_result.image_data is not None:
-            import tifffile
-
-            # Save canvas as 16-bit TIFF
+            # Create mask TIFF
             mask = (np.mean(st.session_state.canvas_result.image_data[:, :, :3], axis=2) * 65535 / 255).astype(np.uint16)
-            tifffile.imwrite("canvas.tiff", mask)
+            mask_bytes = BytesIO()
+            tifffile.imwrite(mask_bytes, mask)
+            mask_bytes.seek(0)
             
-            # Save propagated intensity as 16-bit TIFF
+            # Create intensity TIFF
             propagated_intensity = st.session_state.propagation_system.propagate(mask / 65535.0)
             intensity_16bit = (propagated_intensity / propagated_intensity.max() * 65535).astype(np.uint16)
-            tifffile.imwrite("propagated_intensity.tiff", intensity_16bit)
+            intensity_bytes = BytesIO()
+            tifffile.imwrite(intensity_bytes, intensity_16bit)
+            intensity_bytes.seek(0)
             
-            st.success("Canvas and propagated intensity saved as 16-bit TIFF files.")
+            # Create download buttons
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button(
+                    label="Download Mask",
+                    data=mask_bytes,
+                    file_name="mask.tiff",
+                    mime="image/tiff"
+                )
+            with col2:
+                st.download_button(
+                    label="Download Intensity",
+                    data=intensity_bytes,
+                    file_name="intensity.tiff",
+                    mime="image/tiff"
+                )
         else:
             st.error("No canvas data to save.")
 
-# Main content area - only show propagated intensity
+# Main content area - only show propagated intensity (removed split columns)
 st.subheader("Propagated Intensity")
 if st.session_state.canvas_result is not None and st.session_state.canvas_result.image_data is not None:
     # Ensure mask size matches parameters

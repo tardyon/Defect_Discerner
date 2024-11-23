@@ -44,9 +44,9 @@ class Propagation:
         # Extract parameters in pixel units
         wavelength_pixels = self.params.wavelength_pixels
         z_pixels = self.params.z_pixels
+        canvas_size_pixels = self.params.canvas_size_pixels  # Ensure correct scaling
         padding = self.params.padding
         pad_factor = self.params.pad_factor
-        canvas_size_pixels = self.params.canvas_size_pixels
         pinhole_radius_inv_pixels = self.params.pinhole_radius_inv_pixels
 
         # Apply padding if enabled
@@ -80,45 +80,45 @@ class Propagation:
 
     def _create_edge_rolloff(self) -> np.ndarray:
         """
-        Create an edge roll-off function in pixel units.
-
-        This function generates a smooth transition at the edges of the aperture
-        to minimize artifacts in the propagation.
-
-        Returns:
-            np.ndarray: Edge roll-off array.
+        Create an edge roll-off function that matches the current array size.
         """
-        # Determine the size based on padding
+        # Get current array size
         if self.params.padding:
             size_pixels = self.params.canvas_size_pixels * self.params.pad_factor
         else:
             size_pixels = self.params.canvas_size_pixels
 
         delta_pixels = self.params.delta_pixels
-
-        x = np.linspace(-size_pixels / 2, size_pixels / 2, size_pixels)
-        roll_off = 0.5 * (erf((x + size_pixels / 2) / delta_pixels) - erf((x - size_pixels / 2) / delta_pixels))
-        edge_rolloff = np.outer(roll_off, roll_off)
+        
+        # Create coordinate arrays
+        x = np.linspace(-size_pixels/2, size_pixels/2, size_pixels)
+        y = np.linspace(-size_pixels/2, size_pixels/2, size_pixels)
+        X, Y = np.meshgrid(x, y)
+        
+        # Calculate rolloff
+        rolloff_x = 0.5 * (erf((x + size_pixels/2)/delta_pixels) - erf((x - size_pixels/2)/delta_pixels))
+        rolloff_y = 0.5 * (erf((y + size_pixels/2)/delta_pixels) - erf((y - size_pixels/2)/delta_pixels))
+        
+        # Create 2D rolloff
+        edge_rolloff = np.outer(rolloff_y, rolloff_x)
         return edge_rolloff.astype(np.complex64)
 
     def _pad_array(self, array: np.ndarray) -> np.ndarray:
-        """
-        Pad the array to a larger size to optimize FFT.
-
-        Parameters:
-            array (np.ndarray): Input array.
-
-        Returns:
-            np.ndarray: Padded array with ones.
-        """
+        """Pad the array with ones to reduce ringing artifacts."""
         pad_factor = self.params.pad_factor
         ny, nx = array.shape
         pad_ny = ny * pad_factor
         pad_nx = nx * pad_factor
-        padded_array = np.ones((pad_ny, pad_nx), dtype=array.dtype)  # Changed from zeros to ones
-        y_start = (pad_ny - ny) // 2
-        x_start = (pad_nx - nx) // 2
-        padded_array[y_start:y_start+ny, x_start:x_start+nx] = array
+        
+        # Create array of ones (transmissive)
+        padded_array = np.ones((pad_ny, pad_nx), dtype=array.dtype)
+        
+        # Calculate padding dimensions
+        pad_y = (pad_ny - ny) // 2
+        pad_x = (pad_nx - nx) // 2
+        
+        # Insert the array in the center
+        padded_array[pad_y:pad_y+ny, pad_x:pad_x+nx] = array
         return padded_array
 
     def _crop_array(self, array: np.ndarray) -> np.ndarray:

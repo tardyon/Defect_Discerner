@@ -22,6 +22,7 @@ Defect Discerner is a Python-based simulation tool for studying and visualizing 
 - Required Python packages:
   - `numpy`
   - `matplotlib`
+  - `streamlit-drawable-canvas`
 
 Install the dependencies using:
 

@@ -3,14 +3,19 @@ import numpy as np
 import os
 import tkinter as tk
 from tkinter import filedialog
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from scipy.fft import fft2, ifft2, fftfreq
-from scipy.ndimage import zoom
 from skimage.metrics import structural_similarity as ssim
+from skimage.restoration import denoise_tv_chambolle
+from skimage.transform import resize
 import matplotlib.pyplot as plt
 import tifffile as tiff
 from PIL import Image
 from tqdm import tqdm
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
 
 # Parameters class
 @dataclass
@@ -27,12 +32,11 @@ class Parameters:
     max_iter: int = 100                           # Maximum number of iterations
     convergence_threshold: float = 1e-7           # Convergence threshold
     save_interval: int = 5                       # Interval for saving mask evolution
-    tv_weight: float = 0.001                      # Reduced TV weight
-    admm_rho: float = 1.0                         # Reduced ADMM penalty parameter
+    tv_weight: float = 0.05                      # TV regularization weight
+    admm_rho: float = 10.0                         # ADMM penalty parameter
     clip_propagation: bool = True                 # Flag to control clipping of propagated intensity
 
     def __post_init__(self):
-        # No conversions needed here since all computations are in pixels
         pass
 
     def validate_inverse_parameters(self):
@@ -94,7 +98,7 @@ class Propagation:
         pad_ny = ny * pad_factor
         pad_nx = nx * pad_factor
 
-        padded_array = np.ones((pad_ny, pad_nx), dtype=array.dtype)
+        padded_array = np.ones((pad_ny, pad_nx), dtype=array.dtype)  # Padding with ones
 
         pad_y = (pad_ny - ny) // 2
         pad_x = (pad_nx - nx) // 2
@@ -164,6 +168,40 @@ class MaskMaker:
     def fully_transparent(self):
         self.mask = np.ones((self.size_y_pixels, self.size_x_pixels), dtype=np.float32)
 
+    def pad_to_square(self, pad_factor=2):
+        """Pad the mask to be square and larger by pad_factor."""
+        max_dim = max(self.size_y_pixels, self.size_x_pixels)
+        padded_size = int(max_dim * pad_factor)
+        
+        pad_y = (padded_size - self.size_y_pixels) // 2
+        pad_x = (padded_size - self.size_x_pixels) // 2
+        
+        padded_mask = np.ones((padded_size, padded_size), dtype=np.float32)
+        padded_mask[pad_y:pad_y+self.size_y_pixels, 
+                   pad_x:pad_x+self.size_x_pixels] = self.mask
+        
+        self.original_shape = self.mask.shape
+        self.pad_info = {
+            'pad_y': pad_y,
+            'pad_x': pad_x,
+            'original_shape': self.original_shape
+        }
+        self.mask = padded_mask
+        self.size_y_pixels, self.size_x_pixels = padded_size, padded_size
+        return self.mask
+
+    def crop_to_original(self):
+        """Crop padded mask back to original dimensions."""
+        if not hasattr(self, 'pad_info'):
+            return self.mask
+            
+        pad_y = self.pad_info['pad_y']
+        pad_x = self.pad_info['pad_x']
+        orig_h, orig_w = self.pad_info['original_shape']
+        
+        cropped_mask = self.mask[pad_y:pad_y+orig_h, pad_x:pad_x+orig_w]
+        return cropped_mask
+
 # Solver classes
 class SolverBase:
     def __init__(self, forward_operator, loss_function, regularizers, constraints, propagation, callback=None):
@@ -171,11 +209,12 @@ class SolverBase:
         self.loss_function = loss_function
         self.regularizers = regularizers
         self.constraints = constraints
-        self.propagation = propagation  # Add propagation object
+        self.propagation = propagation
         self.callback = callback
 
 class ADMMSolver(SolverBase):
     def _compute_gradient(self, I_observed, M):
+        """Compute gradient of the loss function with respect to M."""
         if self.propagation.params.padding:
             M_padded = self.propagation._pad_array(M)
         else:
@@ -185,112 +224,89 @@ class ADMMSolver(SolverBase):
         U_fft = fft2(M_padded)
         U_prop_fft = U_fft * self.propagation.H
         U_prop = ifft2(U_prop_fft)
-        I_estimated = np.abs(U_prop)**2
 
-        # Crop if needed
         if self.propagation.params.padding:
-            I_estimated_cropped = self.propagation._crop_array(I_estimated)
             U_prop_cropped = self.propagation._crop_array(U_prop)
         else:
-            I_estimated_cropped = I_estimated
             U_prop_cropped = U_prop
 
-        # Calculate gradient
-        difference = I_estimated_cropped - I_observed
-        grad_cropped = 2 * np.conj(U_prop_cropped) * difference  # Changed to proper conjugate multiplication
+        I_estimated = np.abs(U_prop_cropped)**2
 
-        # Pad gradient for backpropagation
+        # Compute difference
+        difference = I_estimated - I_observed
+
+        # Backpropagate the difference
         if self.propagation.params.padding:
-            grad_padded = self.propagation._pad_array(grad_cropped)
+            difference_padded = self.propagation._pad_array(difference)
         else:
-            grad_padded = grad_cropped.copy()
+            difference_padded = difference
 
-        # Backpropagate gradient
-        grad_fft = fft2(grad_padded)
+        # Compute gradient in the Fourier domain
+        grad_fft = fft2(2 * U_prop * difference_padded)
         grad_back_fft = grad_fft * np.conj(self.propagation.H)
         grad_back = ifft2(grad_back_fft)
 
-        # Final crop and return real part
         if self.propagation.params.padding:
             grad_back = self.propagation._crop_array(grad_back)
 
-        return np.real(grad_back)
+        grad_M = np.real(grad_back)
+        return grad_M
 
     def _proximal_operator(self, Z, alpha):
-        """Proximal operator for TV regularization"""
-        Z_prev = Z.copy()
-        for _ in range(10):  # Few iterations for the proximal step
-            # Compute gradients
-            grad_x = np.roll(Z, -1, axis=1) - Z
-            grad_y = np.roll(Z, -1, axis=0) - Z
-            
-            # Compute divergence
-            div_x = Z - np.roll(Z, 1, axis=1)
-            div_y = Z - np.roll(Z, 1, axis=0)
-            
-            # Update Z
-            denominator = 1 + 2 * alpha * (np.abs(grad_x)**2 + np.abs(grad_y)**2)
-            Z_new = (Z_prev + alpha * (div_x + div_y)) / denominator
-            
-            # Check convergence
-            if np.max(np.abs(Z_new - Z)) < 1e-4:
-                break
-            Z = Z_new
-            
-        return np.clip(Z_new, 0, 1)
-
-    def _backpropagate(self, diff, M):
-        """Helper method for backpropagation if needed"""
-        return diff
+        """Proximal operator for TV regularization using Chambolle's method."""
+        return denoise_tv_chambolle(Z, weight=alpha, channel_axis=None)
 
     def solve(self, I_observed, M_init, max_iter=100, rho=1.0, convergence_threshold=1e-7, tv_weight=0.001):
+        """Solve the inverse problem using ADMM.
+
+        Parameters:
+        - I_observed: Observed intensity image.
+        - M_init: Initial estimate of the mask.
+        - max_iter: Maximum number of iterations.
+        - rho: ADMM penalty parameter.
+        - convergence_threshold: Threshold for convergence.
+        - tv_weight: Weight for TV regularization.
+
+        Returns:
+        - M: Reconstructed mask.
+        """
         M = M_init.copy()
         Z = M.copy()
         U = np.zeros_like(M)
         prev_loss = float('inf')
-        no_improvement_count = 0
+        eps_abs = convergence_threshold
+        eps_rel = convergence_threshold
 
         for i in tqdm(range(max_iter), desc="ADMMSolver"):
-            # Store previous M for step size adjustment
             M_prev = M.copy()
-            
+
             # Compute gradient
             grad = self._compute_gradient(I_observed, M)
-            tv_grad = total_variation(M, weight=tv_weight)
-            total_grad = grad + tv_grad
+            total_grad = grad  # TV regularization handled by proximal operator
 
-            # ADMM updates with step size control
-            step_size = 1.0 / (rho * (1 + i // 10))  # Gradually decrease step size
-            
-            # Update primary variable
-            M = Z - U - step_size * total_grad
-            M = np.clip(M, 0, 1)  # Apply constraints immediately
-            
-            # Update auxiliary variable
-            Z = self._proximal_operator(M + U, 1.0 / rho)
-            
-            # Update dual variable
+            # Update M
+            M = Z - U - (1.0 / rho) * total_grad
+
+            # Apply constraints
+            M = np.clip(M, 0, 1)
+
+            # Update Z using proximal operator
+            Z_prev = Z.copy()
+            Z = self._proximal_operator(M + U, tv_weight / rho)
+
+            # Update U
             U = U + (M - Z)
 
-            # Calculate current loss
-            I_estimated = self.forward_operator(M)
-            current_loss = self.loss_function(I_observed, I_estimated)
+            # Compute residuals for convergence
+            r_norm = np.linalg.norm(M - Z)
+            s_norm = np.linalg.norm(-rho * (Z - Z_prev))
+            eps_pri = np.sqrt(M.size) * eps_abs + eps_rel * max(np.linalg.norm(M), np.linalg.norm(-Z))
+            eps_dual = np.sqrt(M.size) * eps_abs + eps_rel * np.linalg.norm(rho * U)
 
-            # Convergence check with patience
-            if current_loss >= prev_loss:
-                no_improvement_count += 1
-                if no_improvement_count > 5:  # Allow some non-improving iterations
-                    M = M_prev  # Revert to previous solution
-                    print(f"\nConverged at iteration {i} due to loss increase")
-                    break
-            else:
-                no_improvement_count = 0
-
-            if abs(current_loss - prev_loss) < convergence_threshold:
-                print(f"\nConverged at iteration {i} with loss change: {abs(current_loss - prev_loss)}")
+            # Check convergence
+            if r_norm < eps_pri and s_norm < eps_dual:
+                logging.info(f"Converged at iteration {i}")
                 break
-
-            prev_loss = current_loss
 
             if self.callback:
                 self.callback(M, i)
@@ -299,6 +315,7 @@ class ADMMSolver(SolverBase):
 
 # Loss function
 def huber_loss(I_observed, I_estimated, delta=1.0):
+    """Compute the Huber loss between observed and estimated intensities."""
     difference = I_estimated - I_observed
     abs_diff = np.abs(difference)
     mask = abs_diff <= delta
@@ -306,14 +323,6 @@ def huber_loss(I_observed, I_estimated, delta=1.0):
     linear_loss = delta * (abs_diff[~mask] - 0.5 * delta)
     loss = np.sum(quadratic_loss) + np.sum(linear_loss)
     return loss
-
-# Regularization function
-def total_variation(M, weight=0.1):
-    grad_M = np.zeros_like(M)
-    grad_x = np.roll(M, -1, axis=1) - M
-    grad_y = np.roll(M, -1, axis=0) - M
-    grad_M += np.roll(grad_x, 1, axis=1) - grad_x + np.roll(grad_y, 1, axis=0) - grad_y
-    return weight * grad_M
 
 # File selection helper
 def select_file(title, filetypes):
@@ -349,6 +358,11 @@ def select_prior_type():
     root.destroy()
     return prior_type
 
+def float_to_uint16(arr):
+    """Convert a float array with values [0,1] to uint16 [0, 65535]."""
+    arr = np.clip(arr, 0, 1)
+    return (arr * 65535).astype(np.uint16)
+
 def main():
     # Initialize parameters
     params = Parameters()
@@ -368,7 +382,7 @@ def main():
     )
 
     if not observed_file_path:
-        print("No observed image file selected.")
+        logging.error("No observed image file selected.")
         return
 
     # Ground truth mask selection
@@ -390,29 +404,36 @@ def main():
 
     # Load ground truth if provided
     ground_truth = None
-    if (ground_truth_path):
+    if ground_truth_path:
         ground_truth = tiff.imread(ground_truth_path)
         if ground_truth.dtype == np.uint16:
             ground_truth = ground_truth.astype(np.float32) / 65535.0
         elif ground_truth.dtype == np.uint8:
             ground_truth = ground_truth.astype(np.float32) / 255.0
+        else:
+            ground_truth = ground_truth.astype(np.float32)
+            ground_truth /= ground_truth.max()
 
     # Prepare image for processing
-    image_array = original_image.astype(np.float32)
-    print(f"Original image stats:")
-    print(f"  Shape: {original_image.shape}")
-    print(f"  Dtype: {original_image.dtype}")
-    print(f"  Min: {original_image.min()}")
-    print(f"  Max: {original_image.max()}")
-    print(f"  Mean: {original_image.mean()}")
-
-    # Apply clipping based on the clip_propagation flag
-    if params.clip_propagation:
-        I_observed = np.clip(image_array / image_array.max(), 0, 1)
+    if original_image.dtype == np.uint16:
+        I_observed = original_image.astype(np.float32) / 65535.0
+    elif original_image.dtype == np.uint8:
+        I_observed = original_image.astype(np.float32) / 255.0
     else:
-        I_observed = image_array / image_array.max()
+        I_observed = original_image.astype(np.float32)
+        I_observed /= I_observed.max()
 
-    print(f"I_observed stats: min={I_observed.min()}, max={I_observed.max()}, mean={I_observed.mean()}")
+    logging.info(f"Original image stats:")
+    logging.info(f"  Shape: {original_image.shape}")
+    logging.info(f"  Dtype: {original_image.dtype}")
+    logging.info(f"  Min: {original_image.min()}")
+    logging.info(f"  Max: {original_image.max()}")
+    logging.info(f"  Mean: {original_image.mean()}")
+
+    logging.info(f"I_observed stats: min={I_observed.min()}, max={I_observed.max()}, mean={I_observed.mean()}")
+
+    # Apply clipping if needed
+    I_observed = np.clip(I_observed, 0, 1)
 
     # Update pixel scale factor if needed
     pixel_scale_factor = params.pixel_scale_factor  # Pixels per mm
@@ -421,93 +442,83 @@ def main():
     prior_type = select_prior_type()
     params.prior_type = prior_type
 
-    # Initialize MaskMaker with prior
+    # Pad the observed image with the mean of the normalized initial image
+    pad_factor = params.pad_factor
+    max_dim = max(I_observed.shape)
+    padded_size = int(max_dim * pad_factor)
+    pad_y = (padded_size - I_observed.shape[0]) // 2
+    pad_x = (padded_size - I_observed.shape[1]) // 2
+
+    mean_val = I_observed.mean()
+    I_observed_padded = np.full((padded_size, padded_size), mean_val, dtype=np.float32)
+    I_observed_padded[pad_y:pad_y+I_observed.shape[0], pad_x:pad_x+I_observed.shape[1]] = I_observed
+
+    # Update image_shape to the padded size
+    image_shape = (padded_size, padded_size)
+
+    # Initialize MaskMaker with padded dimensions
     mask_maker = MaskMaker(
-        size_x_pixels=image_shape[1],
-        size_y_pixels=image_shape[0]
+        size_x_pixels=padded_size,
+        size_y_pixels=padded_size
     )
+
+    # Generate prior mask matching the padded size
     if prior_type == 'random':
         mask_maker.random_real()
     elif prior_type == 'transparent':
         mask_maker.fully_transparent()
     elif prior_type == 'load':
-        prior_file_path = select_file(
-            "Select prior mask file",
-            [
-                ("Numpy", ".npy"),
-                ("PNG", ".png"),
-                ("JPEG", ".jpg"),
-                ("JPEG", ".jpeg"),
-                ("GIF", ".gif"),
-                ("TIFF", ".tiff"),
-                ("TIFF", ".tif")
-            ]
-        )
-        if not prior_file_path:
-            print("No prior file selected.")
-            return
-        if prior_file_path.endswith('.npy'):
-            prior_mask = np.load(prior_file_path)
+        # ...existing code to load prior_mask...
+        # Resize prior_mask to the padded size if necessary
+        if prior_mask.shape != image_shape:
+            prior_mask_resized = resize(prior_mask, image_shape, mode='reflect', anti_aliasing=True)
         else:
-            prior_image = Image.open(prior_file_path)
-            prior_mask = np.array(prior_image, dtype=np.float32)
-        mask_maker.mask = prior_mask
-    else:
-        print("Invalid prior type selected.")
-        return
+            prior_mask_resized = prior_mask
+        mask_maker.mask = prior_mask_resized
+
     M_init = mask_maker.mask
 
-    # Convert float arrays to 16-bit for visualization
-    def float_to_uint16(arr):
-        arr = np.clip(arr, 0, 1)
-        return (arr * 65535).astype(np.uint16)
+    # Save the initial prior mask (padded)
+    tiff.imwrite('MasksEvolutions/initial_prior_padded.tiff', float_to_uint16(M_init))
 
-    # Save the initial prior mask
-    os.makedirs("MasksEvolutions", exist_ok=True)
-    tiff.imwrite('MasksEvolutions/initial_prior.tiff', float_to_uint16(M_init))
+    # Set pad_factor to 1 to avoid double padding in Propagation
+    params.pad_factor = 1
 
-    # Ensure the prior matches the observed image size
-    if M_init.shape != I_observed.shape:
-        M_init = np.resize(M_init, I_observed.shape)
-
-    # Regularizers
-    regularizers = {
-        'tv': lambda M: params.tv_weight * total_variation(M)
-    }
-
-    constraints = {
-        'non_negativity': lambda M: np.clip(M, 0, 1),
-        'upper_bound': lambda M: np.clip(M, 0, 1)
-    }
-
-    # Forward operator
+    # Initialize propagation with adjusted pad_factor
     propagation = Propagation(params, image_shape)
+
+    # Remove restoring the original pad_factor to prevent double padding
+
+    # Update the forward operator to use the padded propagation
     def forward_operator(M):
         return propagation.propagate(M)
 
     # Track loss history
     loss_history = []
+    # Update the iteration callback to save masks of padded size
     def iteration_callback(M_current, iteration):
         if iteration % params.save_interval == 0:
-            tiff.imwrite(f"MasksEvolutions/mask_iter_{iteration:03d}.tiff",
+            tiff.imwrite(f"MasksEvolutions/mask_iter_{iteration:03d}_padded.tiff",
                          float_to_uint16(M_current))
+        # Use I_observed_padded for loss calculation
         I_current = forward_operator(M_current)
-        loss = huber_loss(I_observed, I_current)
+        loss = huber_loss(I_observed_padded, I_current)
         loss_history.append((iteration, loss))
 
-    # ADMMSolver initialization (update this part)
+    # ADMMSolver initialization
     solver = ADMMSolver(
         forward_operator=forward_operator,
         loss_function=huber_loss,
-        regularizers=regularizers,
-        constraints=constraints,
-        propagation=propagation,  # Pass the propagation object
+        regularizers=None,  # Not used
+        constraints=None,   # Not used
+        propagation=propagation,
         callback=iteration_callback
     )
 
-    print(f"\nRunning ADMM solver...")
-    M_reconstructed = solver.solve(
-        I_observed,
+    # Run the solver with padded observed image and masks
+    logging.info(f"\nRunning ADMM solver...")
+    M_reconstructed_padded = solver.solve(
+        I_observed_padded,
         M_init.copy(),
         max_iter=params.max_iter,
         rho=params.admm_rho,
@@ -515,7 +526,16 @@ def main():
         tv_weight=params.tv_weight
     )
 
-    # Save the final reconstructed mask
+    # Crop the reconstructed mask back to original size
+    pad_y = (M_reconstructed_padded.shape[0] - I_observed.shape[0]) // 2
+    pad_x = (M_reconstructed_padded.shape[1] - I_observed.shape[1]) // 2
+    M_reconstructed = M_reconstructed_padded[pad_y:pad_y+I_observed.shape[0], pad_x:pad_x+I_observed.shape[1]]
+
+    # Similarly, crop the propagated image for visualization
+    I_reconstructed_full = forward_operator(M_reconstructed_padded)
+    I_reconstructed = I_reconstructed_full[pad_y:pad_y+I_observed.shape[0], pad_x:pad_x+I_observed.shape[1]]
+
+    # Save the final reconstructed mask (cropped)
     tiff.imwrite('MasksEvolutions/reconstructed_mask.tiff', float_to_uint16(M_reconstructed))
 
     # Results storage
@@ -538,7 +558,7 @@ def main():
         image_shape[0] / (2 * pixel_scale_factor)
     ]
     im = ax.imshow(original_image, cmap='gray', extent=extent, aspect='equal')
-    fig.colorbar(im, ax=ax, label='Intensity (16-bit)')
+    fig.colorbar(im, ax=ax, label='Intensity')
     ax.set_xlabel('Position (mm)')
     ax.set_ylabel('Position (mm)')
 
@@ -546,26 +566,30 @@ def main():
     ax = axs[0, 1]
     ax.set_title('Prior Mask')
     im = ax.imshow(float_to_uint16(M_init), cmap='gray', extent=extent, aspect='equal')
-    fig.colorbar(im, ax=ax, label='Intensity (16-bit)')
+    fig.colorbar(im, ax=ax, label='Intensity')
     ax.set_xlabel('Position (mm)')
     ax.set_ylabel('Position (mm)')
 
     # 3. Reconstructed Mask
     ax = axs[0, 2]
-    mse = np.mean((M_reconstructed - I_observed) ** 2)
-    ssim_index = ssim(I_observed, M_reconstructed, data_range=1.0)
-    ax.set_title(f'Reconstructed Mask\nMSE: {mse:.6f}\nSSIM: {ssim_index:.6f}')
+    if ground_truth is not None:
+        mse = np.mean((M_reconstructed - ground_truth) ** 2)
+        ssim_index = ssim(ground_truth, M_reconstructed, data_range=1.0)
+        ax.set_title(f'Reconstructed Mask\nMSE: {mse:.6f}\nSSIM: {ssim_index:.6f}')
+    else:
+        ax.set_title(f'Reconstructed Mask')
     im = ax.imshow(float_to_uint16(M_reconstructed), cmap='gray', extent=extent, aspect='equal')
-    fig.colorbar(im, ax=ax, label='Intensity (16-bit)')
+    fig.colorbar(im, ax=ax, label='Intensity')
     ax.set_xlabel('Position (mm)')
     ax.set_ylabel('Position (mm)')
 
     # 4. Forward Propagation
     ax = axs[1, 0]
-    I_reconstructed = propagation.propagate(M_reconstructed)
+    propagation_unpadded = Propagation(params, M_reconstructed.shape)
+    I_reconstructed = propagation_unpadded.propagate(M_reconstructed)
     ax.set_title('Reconstructed Propagation')
     im = ax.imshow(float_to_uint16(I_reconstructed), cmap='gray', extent=extent, aspect='equal')
-    fig.colorbar(im, ax=ax, label='Intensity (16-bit)')
+    fig.colorbar(im, ax=ax, label='Intensity')
     ax.set_xlabel('Position (mm)')
     ax.set_ylabel('Position (mm)')
 
@@ -587,7 +611,7 @@ def main():
         ax = axs[1, 2]
         ax.set_title('Ground Truth Mask')
         im = ax.imshow(float_to_uint16(ground_truth), cmap='gray', extent=extent, aspect='equal')
-        fig.colorbar(im, ax=ax, label='Intensity (16-bit)')
+        fig.colorbar(im, ax=ax, label='Intensity')
         ax.set_xlabel('Position (mm)')
         ax.set_ylabel('Position (mm)')
         tiff.imwrite('MasksEvolutions/ground_truth.tiff', float_to_uint16(ground_truth))

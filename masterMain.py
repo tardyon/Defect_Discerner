@@ -29,11 +29,11 @@ class Parameters:
     propagation_model: str = 'fresnel'
     prior_type: str = 'random'                    # 'random', 'load', 'transparent'
     prior_filepath: str = None                    # Filepath to load prior mask
-    max_iter: int = 100                           # Maximum number of iterations
+    max_iter: int = 500                          # Maximum number of iterations
     convergence_threshold: float = 1e-7           # Convergence threshold
-    save_interval: int = 5                       # Interval for saving mask evolution
+    save_interval: int = 10                       # Interval for saving mask evolution
     tv_weight: float = 0.05                      # TV regularization weight
-    admm_rho: float = 10.0                         # ADMM penalty parameter
+    admm_rho: float =10.0                         # ADMM penalty parameter
     clip_propagation: bool = True                 # Flag to control clipping of propagated intensity
 
     def __post_init__(self):
@@ -452,6 +452,9 @@ def main():
     mean_val = I_observed.mean()
     I_observed_padded = np.full((padded_size, padded_size), mean_val, dtype=np.float32)
     I_observed_padded[pad_y:pad_y+I_observed.shape[0], pad_x:pad_x+I_observed.shape[1]] = I_observed
+
+    # Save the padded input image
+    tiff.imwrite('MasksEvolutions/padded_input.tiff', float_to_uint16(I_observed_padded))
 
     # Update image_shape to the padded size
     image_shape = (padded_size, padded_size)

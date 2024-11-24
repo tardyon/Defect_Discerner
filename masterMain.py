@@ -1,12 +1,10 @@
 # masterMain.py
-
 import numpy as np
 import os
 import tkinter as tk
 from tkinter import filedialog
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from scipy.fft import fft2, ifft2, fftfreq
-from scipy.special import erf
 from scipy.ndimage import zoom
 from skimage.metrics import structural_similarity as ssim
 import matplotlib.pyplot as plt
@@ -17,64 +15,25 @@ from tqdm import tqdm
 # Parameters class
 @dataclass
 class Parameters:
-    wavelength_um: float = 1
-    z_mm: float = 0.0
-    output_type: str = 'intensity'
-    padding: bool = True
+    wavelength_nm: float = 1000                    # Wavelength in nanometers
+    z_mm: float = 0.0                             # Propagation distance in millimeters
+    padding: bool = True                         # Flag to control padding of input mask
     pad_factor: int = 2
-    use_edge_rolloff: bool = False
-    canvas_size_pixels: int = 400
-    canvas_size_mm: float = 10.0
-    pinhole_radius_inv_mm: float = 2.0
-    delta_mm: float = 0.01
+    pixel_scale_factor: float = 400/10.0              # Pixels per millimeter (user-set)
+    pinhole_radius_inv_cyc_mm: float = 2.0        # Inverse pinhole radius in cycles/mm
     propagation_model: str = 'fresnel'
-    prior_type: str = 'random'               # 'random', 'load', 'transparent'
-    prior_filepath: str = None               # Filepath to load prior mask
-    max_iter: int = 500                      # Maximum number of iterations
-    convergence_threshold: float = 1e-7      # Convergence threshold
-    save_interval: int = 10                  # Interval for saving mask evolution
-    tv_weight: float = 0.1                   # Weight for total variation regularization
-    admm_rho: float = 12.0                   # ADMM penalty parameter
+    prior_type: str = 'random'                    # 'random', 'load', 'transparent'
+    prior_filepath: str = None                    # Filepath to load prior mask
+    max_iter: int = 100                           # Maximum number of iterations
+    convergence_threshold: float = 1e-7           # Convergence threshold
+    save_interval: int = 5                       # Interval for saving mask evolution
+    tv_weight: float = 0.001                      # Reduced TV weight
+    admm_rho: float = 1.0                         # Reduced ADMM penalty parameter
+    clip_propagation: bool = True                 # Flag to control clipping of propagated intensity
 
-    @property
-    def scaling_mm_per_pixel(self) -> float:
-        return self.canvas_size_mm / self.canvas_size_pixels
-
-    @property
-    def wavelength_m(self) -> float:
-        return self.wavelength_um * 1e-6
-
-    @property
-    def scaling_m_per_pixel(self) -> float:
-        return self.scaling_mm_per_pixel / 1000.0
-
-    @property
-    def z_m_converted(self) -> float:
-        return self.z_mm / 1000.0
-
-    @property
-    def canvas_size_m(self) -> float:
-        return self.canvas_size_mm / 1000.0
-
-    @property
-    def delta_m_converted(self) -> float:
-        return self.delta_mm / 1000.0
-
-    @property
-    def wavelength_pixels(self) -> float:
-        return self.wavelength_um * 1e-3 / self.scaling_mm_per_pixel  # Convert µm to mm
-
-    @property
-    def z_pixels(self) -> float:
-        return self.z_mm / self.scaling_mm_per_pixel
-
-    @property
-    def pinhole_radius_inv_pixels(self) -> float:
-        return self.pinhole_radius_inv_mm * self.scaling_mm_per_pixel
-
-    @property
-    def delta_pixels(self) -> float:
-        return self.delta_mm / self.scaling_mm_per_pixel
+    def __post_init__(self):
+        # No conversions needed here since all computations are in pixels
+        pass
 
     def validate_inverse_parameters(self):
         if self.prior_type not in ['random', 'load', 'transparent']:
@@ -88,65 +47,46 @@ class Parameters:
 
 # Propagation class
 class Propagation:
-    def __init__(self, params: Parameters):
+    def __init__(self, params: Parameters, image_shape):
         self.params = params
-        self.FX = None
-        self.FY = None
-        self.F_squared = None
+        self.image_shape = image_shape
         self.H = None
         self.model = params.propagation_model
         self._initialize_computational_grids()
 
     def _initialize_computational_grids(self):
-        wavelength_pixels = self.params.wavelength_pixels
-        z_pixels = self.params.z_pixels
-        canvas_size_pixels = self.params.canvas_size_pixels
+        ny, nx = self.image_shape
         padding = self.params.padding
         pad_factor = self.params.pad_factor
-        pinhole_radius_inv_pixels = self.params.pinhole_radius_inv_pixels
+        pixel_scale = self.params.pixel_scale_factor  # Pixels per mm
+        wavelength_pixels = self.params.wavelength_nm / 1e6 * pixel_scale  # Convert nm to mm, then to pixels
+        z_pixels = self.params.z_mm * pixel_scale
+        pinhole_radius_inv_pixels = self.params.pinhole_radius_inv_cyc_mm / pixel_scale
 
         if padding:
-            ny_padded = canvas_size_pixels * pad_factor
-            nx_padded = canvas_size_pixels * pad_factor
+            ny_padded = ny * pad_factor
+            nx_padded = nx * pad_factor
         else:
-            ny_padded = canvas_size_pixels
-            nx_padded = canvas_size_pixels
+            ny_padded = ny
+            nx_padded = nx
 
         fx = fftfreq(nx_padded)
         fy = fftfreq(ny_padded)
-        self.FX, self.FY = np.meshgrid(fx, fy)
-        self.F_squared = (self.FX)**2 + (self.FY)**2
+        FX, FY = np.meshgrid(fx, fy)
+        F_squared = (FX)**2 + (FY)**2
 
         if self.model == 'fresnel':
-            self.H = np.exp(-1j * np.pi * wavelength_pixels * z_pixels * self.F_squared)
+            self.H = np.exp(-1j * np.pi * wavelength_pixels * z_pixels * F_squared)
         elif self.model == 'angular_spectrum':
             k = 2 * np.pi / wavelength_pixels
-            kz_squared = k**2 - (2 * np.pi * self.FX)**2 - (2 * np.pi * self.FY)**2
-            kz = np.sqrt(kz_squared, where=kz_squared >= 0, out=np.zeros_like(kz_squared))
+            kz_squared = k**2 - (2 * np.pi * FX)**2 - (2 * np.pi * FY)**2
+            kz = np.sqrt(np.maximum(kz_squared, 0.0))
             self.H = np.exp(1j * kz * z_pixels)
         else:
             raise ValueError("Invalid propagation_model. Choose 'fresnel' or 'angular_spectrum'.")
 
         if pinhole_radius_inv_pixels > 0:
-            self.H *= self.F_squared <= (pinhole_radius_inv_pixels)**2
-
-    def _create_edge_rolloff(self) -> np.ndarray:
-        if self.params.padding:
-            size_pixels = self.params.canvas_size_pixels * self.params.pad_factor
-        else:
-            size_pixels = self.params.canvas_size_pixels
-
-        delta_pixels = self.params.delta_pixels
-
-        x = np.linspace(-size_pixels/2, size_pixels/2, size_pixels)
-        y = np.linspace(-size_pixels/2, size_pixels/2, size_pixels)
-        X, Y = np.meshgrid(x, y)
-
-        rolloff_x = 0.5 * (erf((x + size_pixels/2)/delta_pixels) - erf((x - size_pixels/2)/delta_pixels))
-        rolloff_y = 0.5 * (erf((y + size_pixels/2)/delta_pixels) - erf((y - size_pixels/2)/delta_pixels))
-
-        edge_rolloff = np.outer(rolloff_y, rolloff_x)
-        return edge_rolloff.astype(np.complex64)
+            self.H *= F_squared <= (pinhole_radius_inv_pixels)**2
 
     def _pad_array(self, array: np.ndarray) -> np.ndarray:
         pad_factor = self.params.pad_factor
@@ -178,14 +118,6 @@ class Propagation:
         else:
             U0 = mask_array.copy()
 
-        if self.params.use_edge_rolloff:
-            edge_rolloff = self._create_edge_rolloff()
-            if U0.shape != edge_rolloff.shape:
-                raise ValueError(
-                    f"Shape mismatch: U0 shape {U0.shape} and edge_rolloff shape {edge_rolloff.shape}"
-                )
-            U0 = U0 * edge_rolloff
-
         U1_fft = fft2(U0)
         U2_fft = U1_fft * self.H
         U2 = ifft2(U2_fft)
@@ -198,7 +130,7 @@ class Propagation:
 
 # MaskMaker class
 class MaskMaker:
-    def __init__(self, size_x_pixels, size_y_pixels, size_x_mm, size_y_mm, prior_mask=None):
+    def __init__(self, size_x_pixels, size_y_pixels, size_x_mm=None, size_y_mm=None, prior_mask=None):
         self.size_x_pixels = size_x_pixels
         self.size_y_pixels = size_y_pixels
         self.size_x_mm = size_x_mm
@@ -234,47 +166,136 @@ class MaskMaker:
 
 # Solver classes
 class SolverBase:
-    def __init__(self, forward_operator, loss_function, regularizers, constraints, callback=None):
+    def __init__(self, forward_operator, loss_function, regularizers, constraints, propagation, callback=None):
         self.forward_operator = forward_operator
         self.loss_function = loss_function
         self.regularizers = regularizers
         self.constraints = constraints
+        self.propagation = propagation  # Add propagation object
         self.callback = callback
 
-    def solve(self, I_observed, M_init, **kwargs):
-        raise NotImplementedError("Solve method must be implemented by subclasses.")
-
 class ADMMSolver(SolverBase):
-    def solve(self, I_observed, M_init, max_iter=100, rho=1.0):
+    def _compute_gradient(self, I_observed, M):
+        if self.propagation.params.padding:
+            M_padded = self.propagation._pad_array(M)
+        else:
+            M_padded = M.copy()
+
+        # Forward propagation
+        U_fft = fft2(M_padded)
+        U_prop_fft = U_fft * self.propagation.H
+        U_prop = ifft2(U_prop_fft)
+        I_estimated = np.abs(U_prop)**2
+
+        # Crop if needed
+        if self.propagation.params.padding:
+            I_estimated_cropped = self.propagation._crop_array(I_estimated)
+            U_prop_cropped = self.propagation._crop_array(U_prop)
+        else:
+            I_estimated_cropped = I_estimated
+            U_prop_cropped = U_prop
+
+        # Calculate gradient
+        difference = I_estimated_cropped - I_observed
+        grad_cropped = 2 * np.conj(U_prop_cropped) * difference  # Changed to proper conjugate multiplication
+
+        # Pad gradient for backpropagation
+        if self.propagation.params.padding:
+            grad_padded = self.propagation._pad_array(grad_cropped)
+        else:
+            grad_padded = grad_cropped.copy()
+
+        # Backpropagate gradient
+        grad_fft = fft2(grad_padded)
+        grad_back_fft = grad_fft * np.conj(self.propagation.H)
+        grad_back = ifft2(grad_back_fft)
+
+        # Final crop and return real part
+        if self.propagation.params.padding:
+            grad_back = self.propagation._crop_array(grad_back)
+
+        return np.real(grad_back)
+
+    def _proximal_operator(self, Z, alpha):
+        """Proximal operator for TV regularization"""
+        Z_prev = Z.copy()
+        for _ in range(10):  # Few iterations for the proximal step
+            # Compute gradients
+            grad_x = np.roll(Z, -1, axis=1) - Z
+            grad_y = np.roll(Z, -1, axis=0) - Z
+            
+            # Compute divergence
+            div_x = Z - np.roll(Z, 1, axis=1)
+            div_y = Z - np.roll(Z, 1, axis=0)
+            
+            # Update Z
+            denominator = 1 + 2 * alpha * (np.abs(grad_x)**2 + np.abs(grad_y)**2)
+            Z_new = (Z_prev + alpha * (div_x + div_y)) / denominator
+            
+            # Check convergence
+            if np.max(np.abs(Z_new - Z)) < 1e-4:
+                break
+            Z = Z_new
+            
+        return np.clip(Z_new, 0, 1)
+
+    def _backpropagate(self, diff, M):
+        """Helper method for backpropagation if needed"""
+        return diff
+
+    def solve(self, I_observed, M_init, max_iter=100, rho=1.0, convergence_threshold=1e-7, tv_weight=0.001):
         M = M_init.copy()
         Z = M.copy()
         U = np.zeros_like(M)
+        prev_loss = float('inf')
+        no_improvement_count = 0
 
         for i in tqdm(range(max_iter), desc="ADMMSolver"):
+            # Store previous M for step size adjustment
+            M_prev = M.copy()
+            
+            # Compute gradient
             grad = self._compute_gradient(I_observed, M)
-            M = Z - U - grad / rho
-            for constraint in self.constraints.values():
-                M = constraint(M)
-            Z = M + U
-            Z = self._proximal_operator(Z, 1 / rho)
-            U += M - Z
+            tv_grad = total_variation(M, weight=tv_weight)
+            total_grad = grad + tv_grad
+
+            # ADMM updates with step size control
+            step_size = 1.0 / (rho * (1 + i // 10))  # Gradually decrease step size
+            
+            # Update primary variable
+            M = Z - U - step_size * total_grad
+            M = np.clip(M, 0, 1)  # Apply constraints immediately
+            
+            # Update auxiliary variable
+            Z = self._proximal_operator(M + U, 1.0 / rho)
+            
+            # Update dual variable
+            U = U + (M - Z)
+
+            # Calculate current loss
+            I_estimated = self.forward_operator(M)
+            current_loss = self.loss_function(I_observed, I_estimated)
+
+            # Convergence check with patience
+            if current_loss >= prev_loss:
+                no_improvement_count += 1
+                if no_improvement_count > 5:  # Allow some non-improving iterations
+                    M = M_prev  # Revert to previous solution
+                    print(f"\nConverged at iteration {i} due to loss increase")
+                    break
+            else:
+                no_improvement_count = 0
+
+            if abs(current_loss - prev_loss) < convergence_threshold:
+                print(f"\nConverged at iteration {i} with loss change: {abs(current_loss - prev_loss)}")
+                break
+
+            prev_loss = current_loss
 
             if self.callback:
                 self.callback(M, i)
 
         return M
-
-    def _compute_gradient(self, I_observed, M):
-        I_estimated = self.forward_operator(M)
-        difference = I_estimated - I_observed
-        grad_M = 2 * self._backpropagate(difference, M)
-        return grad_M
-
-    def _backpropagate(self, diff, M):
-        return diff
-
-    def _proximal_operator(self, Z, alpha):
-        return Z  # Placeholder implementation
 
 # Loss function
 def huber_loss(I_observed, I_estimated, delta=1.0):
@@ -365,10 +386,11 @@ def main():
 
     # Load the observed image
     original_image = tiff.imread(observed_file_path)
+    image_shape = original_image.shape
 
     # Load ground truth if provided
     ground_truth = None
-    if ground_truth_path:
+    if (ground_truth_path):
         ground_truth = tiff.imread(ground_truth_path)
         if ground_truth.dtype == np.uint16:
             ground_truth = ground_truth.astype(np.float32) / 65535.0
@@ -384,17 +406,16 @@ def main():
     print(f"  Max: {original_image.max()}")
     print(f"  Mean: {original_image.mean()}")
 
-    image_array = (image_array - image_array.min()) / (image_array.max() - image_array.min())
+    # Apply clipping based on the clip_propagation flag
+    if params.clip_propagation:
+        I_observed = np.clip(image_array / image_array.max(), 0, 1)
+    else:
+        I_observed = image_array / image_array.max()
 
-    # Simulate observed intensity
-    propagation = Propagation(params)
-    I_observed = np.clip(image_array, 0, 1)
     print(f"I_observed stats: min={I_observed.min()}, max={I_observed.max()}, mean={I_observed.mean()}")
 
-    # Update canvas size parameters
-    params.canvas_size_pixels = I_observed.shape[1]
-    params.canvas_size_mm = 10.0
-    pixel_size_mm = params.canvas_size_mm / params.canvas_size_pixels
+    # Update pixel scale factor if needed
+    pixel_scale_factor = params.pixel_scale_factor  # Pixels per mm
 
     # Prior type selection
     prior_type = select_prior_type()
@@ -402,10 +423,8 @@ def main():
 
     # Initialize MaskMaker with prior
     mask_maker = MaskMaker(
-        size_x_pixels=params.canvas_size_pixels,
-        size_y_pixels=params.canvas_size_pixels,
-        size_x_mm=params.canvas_size_mm,
-        size_y_mm=params.canvas_size_mm
+        size_x_pixels=image_shape[1],
+        size_y_pixels=image_shape[0]
     )
     if prior_type == 'random':
         mask_maker.random_real()
@@ -462,6 +481,7 @@ def main():
     }
 
     # Forward operator
+    propagation = Propagation(params, image_shape)
     def forward_operator(M):
         return propagation.propagate(M)
 
@@ -475,16 +495,24 @@ def main():
         loss = huber_loss(I_observed, I_current)
         loss_history.append((iteration, loss))
 
-    # ADMMSolver
-    solver = ADMMSolver(forward_operator, huber_loss, regularizers, constraints,
-                        callback=iteration_callback)
+    # ADMMSolver initialization (update this part)
+    solver = ADMMSolver(
+        forward_operator=forward_operator,
+        loss_function=huber_loss,
+        regularizers=regularizers,
+        constraints=constraints,
+        propagation=propagation,  # Pass the propagation object
+        callback=iteration_callback
+    )
 
     print(f"\nRunning ADMM solver...")
     M_reconstructed = solver.solve(
         I_observed,
         M_init.copy(),
         max_iter=params.max_iter,
-        rho=params.admm_rho
+        rho=params.admm_rho,
+        convergence_threshold=params.convergence_threshold,
+        tv_weight=params.tv_weight
     )
 
     # Save the final reconstructed mask
@@ -503,8 +531,12 @@ def main():
     # 1. Original Image
     ax = axs[0, 0]
     ax.set_title('Original Input Image')
-    extent = [-params.canvas_size_mm / 2, params.canvas_size_mm / 2,
-              -params.canvas_size_mm / 2, params.canvas_size_mm / 2]
+    extent = [
+        -image_shape[1] / (2 * pixel_scale_factor),
+        image_shape[1] / (2 * pixel_scale_factor),
+        -image_shape[0] / (2 * pixel_scale_factor),
+        image_shape[0] / (2 * pixel_scale_factor)
+    ]
     im = ax.imshow(original_image, cmap='gray', extent=extent, aspect='equal')
     fig.colorbar(im, ax=ax, label='Intensity (16-bit)')
     ax.set_xlabel('Position (mm)')
